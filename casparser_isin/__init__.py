@@ -1,3 +1,5 @@
 from .mfisin import MFISINDb
 
-__all__ = ["MFISINDb", ]
+__all__ = [
+    "MFISINDb",
+]
