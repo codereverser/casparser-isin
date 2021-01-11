@@ -88,7 +88,7 @@ class MFISINDb:
                 sql += """ AND rta_code = ?"""
                 args.append(rta_code)
 
-            if "reinvest" in scheme_name:
+            if re.search("re-*invest", scheme_name, re.I):
                 sql += """ AND name LIKE '%reinvest%' """
             else:
                 sql += """ AND name NOT LIKE '%reinvest%' """
@@ -116,6 +116,6 @@ class MFISINDb:
         results = self.scheme_lookup(rta, scheme_name, rta_code=rta_code, amc_code=amc_code)
         if len(results) == 0:
             raise ValueError("No schemes found")
-        schemes = {x["name"]: (x["isin"], x["amfi_code"]) for x in results}
-        key, _ = process.extractOne(scheme_name, schemes.keys())
+        schemes = {x["name"]: (x["name"], x["isin"], x["amfi_code"]) for x in results}
+        key, _, _ = process.extractOne(scheme_name, schemes.keys())
         return schemes[key]
