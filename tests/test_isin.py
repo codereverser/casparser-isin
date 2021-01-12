@@ -1,5 +1,8 @@
 import csv
 from pathlib import Path
+import sqlite3
+
+import pytest
 
 from casparser_isin import MFISINDb
 
@@ -20,6 +23,10 @@ class TestISINSearch:
                 assert isin == isin_match
                 assert amfi == amfi_match
 
+        # Check if db is closed after exit
+        with pytest.raises(sqlite3.ProgrammingError):
+            db.connection.cursor()
+
     def test_without_ctx(self):
         db = MFISINDb()
         _, isin, amfi = db.get_scheme_isin(
@@ -27,3 +34,7 @@ class TestISINSearch:
         )
         assert isin == "INF846K01131"
         assert amfi == "112323"
+
+        # Check if db is closed automatically.
+        with pytest.raises(sqlite3.ProgrammingError):
+            db.connection.cursor()
