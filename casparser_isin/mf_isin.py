@@ -54,12 +54,7 @@ class MFISINDb:
             self.connection.close()
             self.connection = None
 
-    def scheme_lookup(
-        self,
-        rta: str,
-        scheme_name: str,
-        rta_code: str
-    ):
+    def scheme_lookup(self, rta: str, scheme_name: str, rta_code: str):
         """
         Lookup scheme details from the database
         :param rta: RTA (CAMS, KARVY, FTAMIL)
@@ -93,7 +88,7 @@ class MFISINDb:
                 where.append("rta_code = :rta_code")
                 args.update(rta_code=rta_code)
 
-            sql_statement = '{} WHERE {}'.format(sql, ' AND '.join(where))
+            sql_statement = "{} WHERE {}".format(sql, " AND ".join(where))
             self.cursor.execute(sql_statement, args)
             results = self.cursor.fetchall()
 
@@ -107,7 +102,9 @@ class MFISINDb:
             if self_initialized:
                 self.close()
 
-    def isin_lookup(self, scheme_name: str, rta: str, rta_code: str, min_score:int = 75) -> SchemeData:
+    def isin_lookup(
+        self, scheme_name: str, rta: str, rta_code: str, min_score: int = 75
+    ) -> SchemeData:
         """
         Return the closest matching scheme from MF isin database.
 
@@ -117,10 +114,13 @@ class MFISINDb:
         :param min_score: Minimum score (out of 100) required from the fuzzy match algorithm
 
         :return: isin and amfi_code code for matching scheme.
+        :rtype: SchemeData
         :raises: ValueError if no scheme is found in the database.
         """
 
-        if not(isinstance(scheme_name, str) and isinstance(rta, str) and isinstance(rta_code, str)):
+        if not (
+            isinstance(scheme_name, str) and isinstance(rta, str) and isinstance(rta_code, str)
+        ):
             raise TypeError("Invalid input")
         if rta.upper() not in RTA_MAP:
             raise ValueError(f"Invalid RTA : {rta}")
@@ -132,4 +132,3 @@ class MFISINDb:
                 name, isin, amfi_code = schemes[key]
                 return SchemeData(name=name, isin=isin, amfi_code=amfi_code, score=score)
         raise ValueError("No schemes found")
-
