@@ -1,6 +1,5 @@
 import csv
 from pathlib import Path
-import sqlite3
 
 import pytest
 
@@ -19,22 +18,28 @@ class TestISINSearch:
             next(reader)
             for row in reader:
                 name, rta, rta_code, _, isin, amfi = row
-                _, isin_match, amfi_match = db.get_scheme_isin(name, rta, rta_code)
-                assert isin == isin_match
-                assert amfi == amfi_match
+                scheme_data = db.isin_lookup(name, rta, rta_code)
+                assert isin == scheme_data.isin
+                assert amfi == scheme_data.amfi_code
+                assert scheme_data.score >= 75
 
-        # Check if db is closed after exit
-        with pytest.raises(sqlite3.ProgrammingError):
-            db.connection.cursor()
+        assert db.connection is None
+
+    def test_bad_isin(self):
+        with MFISINDb() as db:
+            with pytest.raises(ValueError):
+                db.isin_lookup("", "", "")
+            with pytest.raises(TypeError):
+                db.isin_lookup(None, "", "")
+            with pytest.raises(ValueError):
+                db.isin_lookup("", "KARVY-OLD", "")
+            with pytest.raises(ValueError):
+                db.isin_lookup("", "KARVY", "")
 
     def test_without_ctx(self):
         db = MFISINDb()
-        _, isin, amfi = db.get_scheme_isin(
-            "Axis Long Term Equity Fund - Regular Growth", "KFINTECH", "128TSGPG"
-        )
-        assert isin == "INF846K01131"
-        assert amfi == "112323"
+        assert db.connection is None
+        with pytest.raises(ValueError):
+            db.isin_lookup("sbi magnum midcap", "KFINTECH", "128TSGPG")  # score < min_score
 
-        # Check if db is closed automatically.
-        with pytest.raises(sqlite3.ProgrammingError):
-            db.connection.cursor()
+        assert db.connection is None
