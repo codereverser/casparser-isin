@@ -21,7 +21,6 @@ class TestISINSearch:
                 scheme_data = db.isin_lookup(name, rta, rta_code)
                 assert isin == scheme_data.isin
                 assert amfi == scheme_data.amfi_code
-                assert scheme_data.score >= 75
 
         assert db.connection is None
 
@@ -39,7 +38,8 @@ class TestISINSearch:
     def test_without_ctx(self):
         db = MFISINDb()
         assert db.connection is None
-        with pytest.raises(ValueError):
-            db.isin_lookup("sbi magnum midcap", "KFINTECH", "128TSGPG")  # score < min_score
+
+        data = db.isin_lookup("ICICI Prudential MIP - Direct Plan", "CAMS", "0")
+        assert data.isin == "INF109K01U35"
 
         assert db.connection is None

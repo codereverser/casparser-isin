@@ -128,7 +128,7 @@ class MFISINDb:
         if len(results) > 0:
             schemes = {x["name"]: (x["name"], x["isin"], x["amfi_code"]) for x in results}
             key, score, _ = process.extractOne(scheme_name, schemes.keys())
-            if score >= min_score:
+            if score >= min_score or len(results) == 1:
                 name, isin, amfi_code = schemes[key]
                 return SchemeData(name=name, isin=isin, amfi_code=amfi_code, score=score)
         raise ValueError("No schemes found")
