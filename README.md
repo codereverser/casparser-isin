@@ -31,3 +31,12 @@ SchemeData(name='axis long term equity fund - direct growth',
            amfi_code='120503', 
            score=100.0)
 ```
+
+## Notes
+
+casparser-isin is shipped with a local database which may get redundant over time. The local 
+database can be updated via the cli tool 
+
+```shell
+casparser-isin --update
+```
