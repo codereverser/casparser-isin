@@ -1,6 +1,7 @@
 import csv
 from pathlib import Path
 
+# noinspection PyPackageRequirements
 import pytest
 
 from casparser_isin import MFISINDb
@@ -29,6 +30,7 @@ class TestISINSearch:
             with pytest.raises(ValueError):
                 db.isin_lookup("", "", "")
             with pytest.raises(TypeError):
+                # noinspection PyTypeChecker
                 db.isin_lookup(None, "", "")
             with pytest.raises(ValueError):
                 db.isin_lookup("", "KARVY-OLD", "")
