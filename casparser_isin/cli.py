@@ -1,6 +1,7 @@
 import argparse
 import logging
 import pathlib
+from packaging import version
 import sqlite3
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -20,8 +21,12 @@ def get_metadata():
     try:
         with conn:
             cursor.execute("SELECT key, value from meta")
-            metadata = dict(cursor.fetchall())
-            metadata["cli-version"] = __version__
+            metadata = {}
+            for key, value in cursor.fetchall():
+                if key in ("dbformat", "version"):
+                    value = version.parse(value)
+                metadata[key] = value
+            metadata["cli-version"] = version.parse(__version__)
             return metadata
     finally:
         cursor.close()
@@ -56,15 +61,17 @@ def update_isin_db():
     for line in data.splitlines():
         split = line.split("=")
         if len(split) == 2:
-            k, v = split
-            remote_meta[k.strip()] = v.strip()
+            key, value = [x.strip() for x in split]
+            if key in ("dbformat", "version"):
+                value = version.parse(value)
+            remote_meta[key] = value
     logging.info("Local db version  : %s", local_meta.get("version"))
     logging.info("Remote db version : %s", remote_meta.get("version"))
     if (
         remote_meta["version"] > local_meta["version"]
         and remote_meta["dbformat"] == local_meta["dbformat"]
     ):
-        logging.info("Fetching database files")
+        logging.info("Fetching database version :: %s", remote_meta["version"])
         response = urlopen(build_request(DB_URL))
         data = response.read()
         with open(ISIN_DB_PATH, "wb") as f:

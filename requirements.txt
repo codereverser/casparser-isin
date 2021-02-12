@@ -1,1 +1,2 @@
+packaging==20.9
 rapidfuzz==0.14.2
