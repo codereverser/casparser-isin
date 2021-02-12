@@ -4,7 +4,7 @@ import pathlib
 from packaging import version
 import sqlite3
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib import request
 
 from .__version__ import __version__
 
@@ -45,18 +45,18 @@ def build_request(url):
         "User Agent": f"casparser-isin {__version__}",
         "X-origin-casparser": "true",
     }
-    return Request(url, headers=hdr)
+    return request.Request(url, headers=hdr)
 
 
 def update_isin_db():
     local_meta = get_metadata()
     logging.info("Fetching remote isin db metadata")
     try:
-        response = urlopen(build_request(META_URL))
+        with request.urlopen(build_request(META_URL)) as response:
+            data = response.read().decode()
     except HTTPError as e:
-        logging.error("Received error from remote server :: %s", e.read().decode())
+        logging.error("Received error from remote server :: %s", e.reason)
         return
-    data = response.read().decode()
     remote_meta = {}
     for line in data.splitlines():
         split = line.split("=")
@@ -72,8 +72,12 @@ def update_isin_db():
         and remote_meta["dbformat"] == local_meta["dbformat"]
     ):
         logging.info("Fetching database version :: %s", remote_meta["version"])
-        response = urlopen(build_request(DB_URL))
-        data = response.read()
+        try:
+            with request.urlopen(build_request(DB_URL)) as response:
+                data = response.read()
+        except HTTPError as e:
+            logging.error("Error fetching isin database :: %s", e.reason)
+            return
         with open(ISIN_DB_PATH, "wb") as f:
             f.write(data)
         logging.info("Updated casparser-isin database.")
