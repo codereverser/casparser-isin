@@ -93,6 +93,14 @@ def version_cli(monkeypatch):
 
 
 @pytest.fixture
+def help_cli(monkeypatch):
+    monkeypatch.setattr(
+        argparse.ArgumentParser,
+        "parse_args",
+        lambda x: argparse.Namespace(update=False, version=False),
+    )
+
+@pytest.fixture
 def update_cli(monkeypatch):
     monkeypatch.setattr(
         argparse.ArgumentParser,

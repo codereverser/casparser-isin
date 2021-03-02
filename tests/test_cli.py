@@ -4,7 +4,7 @@ from urllib import request
 
 from casparser_isin import cli
 
-from .common import MockResponse, mockopen, update_cli, version_cli
+from .common import MockResponse, mockopen, update_cli, version_cli, help_cli
 
 
 class TestCLI:
@@ -23,6 +23,13 @@ class TestCLI:
         captured = capsys.readouterr()
         assert captured.err == ""
         assert captured.out == expected_output
+
+    def test_help(self, capsys, help_cli):
+        cli.main()
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert isinstance(captured.out, str) and captured.out.startswith("usage: casparser-isin")
 
     def test_meta_fail(self, monkeypatch, update_cli, caplog, mockopen):
         def mock_urlopen(request_obj, db_version="3099.01.01", fail_on_urls=None):
