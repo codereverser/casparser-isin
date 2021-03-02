@@ -41,7 +41,7 @@ class TestISINSearch:
         db = MFISINDb()
         assert db.connection is None
 
-        data = db.isin_lookup("ICICI Prudential MIP - Direct Plan", "CAMS", "0")
+        data = db.isin_lookup("ICICI Prudential MIP - Direct Plan growth", "CAMS", "0")
         assert data.isin == "INF109K01U35"
 
         assert db.connection is None
