@@ -34,7 +34,7 @@ SchemeData(name='axis long term equity fund - direct growth',
 
 ## Notes
 
-casparser-isin is shipped with a local database which may get redundant over time. The local 
+casparser-isin is shipped with a local database which may get obsolete over time. The local 
 database can be updated via the cli tool 
 
 ```shell
