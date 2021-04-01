@@ -1,2 +1,2 @@
 packaging==20.9
-rapidfuzz==1.1.1
+rapidfuzz==1.4.1
