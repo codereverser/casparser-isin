@@ -1,22 +1,19 @@
 import argparse
 import logging
-import pathlib
 from packaging import version
 import sqlite3
 from urllib.error import HTTPError
 from urllib import request
 
 from .__version__ import __version__
-
-BASE_DIR = pathlib.Path(__file__).resolve().parent
-ISIN_DB_PATH = BASE_DIR / "isin.db"
+from .utils import get_isin_db_path
 
 META_URL = "https://casparser.atomcoder.com/isin.db.meta"
 DB_URL = "https://casparser.atomcoder.com/isin.db"
 
 
 def get_metadata():
-    conn = sqlite3.connect(ISIN_DB_PATH)
+    conn = sqlite3.connect(get_isin_db_path())
     cursor = conn.cursor()
     try:
         with conn:
@@ -78,7 +75,7 @@ def update_isin_db():
         except HTTPError as e:
             logging.error("Error fetching isin database :: %s", e.reason)
             return
-        with open(ISIN_DB_PATH, "wb") as f:
+        with open(get_isin_db_path(), "wb") as f:
             f.write(data)
         logging.info("Updated casparser-isin database.")
     else:

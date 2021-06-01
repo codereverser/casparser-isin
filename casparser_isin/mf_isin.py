@@ -1,13 +1,11 @@
 from collections import namedtuple
-import pathlib
 import re
 import sqlite3
 
 from rapidfuzz import process
 
+from .utils import get_isin_db_path
 
-BASE_DIR = pathlib.Path(__file__).resolve().parent
-ISIN_DB_PATH = BASE_DIR / "isin.db"
 RTA_MAP = {
     "CAMS": "CAMS",
     "FTAMIL": "FRANKLIN",
@@ -41,7 +39,7 @@ class MFISINDb:
 
     def initialize(self):
         """Initialize database."""
-        self.connection = sqlite3.connect(ISIN_DB_PATH)
+        self.connection = sqlite3.connect(get_isin_db_path())
         self.connection.row_factory = dict_factory
         self.cursor = self.connection.cursor()
 
