@@ -1,0 +1,3 @@
+include casparser_isin/*.py
+include casparser_isin/VERSION.txt
+include casparser_isin/isin.db
