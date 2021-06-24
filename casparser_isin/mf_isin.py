@@ -94,7 +94,6 @@ class MFISINDb:
                 args["rta_code"] = args["rta_code"][:-1]
                 self.cursor.execute(sql_statement, args)
                 results = self.cursor.fetchall()
-            print(results)
             return results
         finally:
             if self_initialized:
