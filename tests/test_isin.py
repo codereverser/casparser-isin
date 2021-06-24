@@ -43,5 +43,6 @@ class TestISINSearch:
 
         data = db.isin_lookup("ICICI Prudential MIP - Direct Plan growth", "CAMS", "0")
         assert data.isin == "INF109K01U35"
+        assert data.type == "DEBT"
 
         assert db.connection is None

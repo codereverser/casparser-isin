@@ -14,7 +14,7 @@ RTA_MAP = {
     "KARVY": "KARVY",
 }
 
-SchemeData = namedtuple("SchemeData", "name isin amfi_code score")
+SchemeData = namedtuple("SchemeData", "name isin amfi_code type score")
 
 
 def dict_factory(cursor, row):
@@ -69,7 +69,7 @@ class MFISINDb:
             if rta_code is not None:
                 rta_code = re.sub(r"\s+", "", rta_code)
 
-            sql = """SELECT name, isin, amfi_code from scheme"""
+            sql = """SELECT name, isin, amfi_code, type from scheme"""
             where = ["rta = :rta"]
             args = {"rta": RTA_MAP.get(str(rta).upper(), "")}
 
@@ -94,7 +94,7 @@ class MFISINDb:
                 args["rta_code"] = args["rta_code"][:-1]
                 self.cursor.execute(sql_statement, args)
                 results = self.cursor.fetchall()
-
+            print(results)
             return results
         finally:
             if self_initialized:
@@ -124,9 +124,13 @@ class MFISINDb:
             raise ValueError(f"Invalid RTA : {rta}")
         results = self.scheme_lookup(rta, scheme_name, rta_code)
         if len(results) > 0:
-            schemes = {x["name"]: (x["name"], x["isin"], x["amfi_code"]) for x in results}
+            schemes = {
+                x["name"]: (x["name"], x["isin"], x["amfi_code"], x["type"]) for x in results
+            }
             key, score, _ = process.extractOne(scheme_name, schemes.keys())
             if score >= min_score or len(results) == 1:
-                name, isin, amfi_code = schemes[key]
-                return SchemeData(name=name, isin=isin, amfi_code=amfi_code, score=score)
+                name, isin, amfi_code, scheme_type = schemes[key]
+                return SchemeData(
+                    name=name, isin=isin, amfi_code=amfi_code, type=scheme_type, score=score
+                )
         raise ValueError("No schemes found")
