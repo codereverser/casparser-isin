@@ -26,11 +26,25 @@ with MFISINDb() as db:
 print(scheme_data)
 ```
 ```
-SchemeData(name='axis long term equity fund - direct growth', 
-           isin='INF846K01EW2', 
-           amfi_code='120503', 
+SchemeData(name="axis long term equity fund - direct growth", 
+           isin="INF846K01EW2", 
+           amfi_code="120503", 
            score=100.0)
 ```
+
+The database also contains NAV values on 31-Jan-2018 for all funds, which can be used for 
+taxable LTCG computation for units purchased before the same date.  
+
+```
+from casparser_isin import MFISINDb
+with MFISINDb() as db:
+    nav = db.nav_lookup("INF846K01EW2")
+print(nav)
+```
+```
+Decimal('44.8938')
+```
+
 
 ## Notes
 
