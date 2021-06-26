@@ -38,12 +38,11 @@ class MockFileManager:
         self._open = builtins.open
 
     def open(self, name, mode="r", buffering=-1, **options):
-        print(name, mode, buffering, options)
         name = os.path.abspath(name)
         if mode.startswith("r") and name not in self.files:
             # We have to let some files through
             return self._open(name, mode, buffering, **options)
-            # This causes stracktraces not to display
+            # This causes stack traces not to display
             # raise IOError(2, "No such file or directory: '%s'" % name)
 
         if mode.startswith("w") or (mode.startswith("a") and name not in self.files):
@@ -99,6 +98,7 @@ def help_cli(monkeypatch):
         "parse_args",
         lambda x: argparse.Namespace(update=False, version=False),
     )
+
 
 @pytest.fixture
 def update_cli(monkeypatch):

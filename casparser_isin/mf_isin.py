@@ -1,6 +1,8 @@
 from collections import namedtuple
+from decimal import Decimal
 import re
 import sqlite3
+from typing import Optional
 
 from rapidfuzz import process
 
@@ -52,6 +54,20 @@ class MFISINDb:
             self.connection.close()
             self.connection = None
 
+    def run_query(self, sql, arguments, fetchone=False):
+        self_initialized = False
+        if self.connection is None:
+            self.initialize()
+            self_initialized = True
+        try:
+            self.cursor.execute(sql, arguments)
+            if fetchone:
+                return self.cursor.fetchone()
+            return self.cursor.fetchall()
+        finally:
+            if self_initialized:
+                self.close()
+
     def scheme_lookup(self, rta: str, scheme_name: str, rta_code: str):
         """
         Lookup scheme details from the database
@@ -60,44 +76,33 @@ class MFISINDb:
         :param rta_code: RTA code for the scheme
         :return:
         """
-        self_initialized = False
-        if self.connection is None:
-            self.initialize()
-            self_initialized = True
+        if rta_code is not None:
+            rta_code = re.sub(r"\s+", "", rta_code)
 
-        try:
-            if rta_code is not None:
-                rta_code = re.sub(r"\s+", "", rta_code)
+        sql = """SELECT name, isin, amfi_code, type from scheme"""
+        where = ["rta = :rta"]
+        args = {"rta": RTA_MAP.get(str(rta).upper(), "")}
 
-            sql = """SELECT name, isin, amfi_code, type from scheme"""
-            where = ["rta = :rta"]
-            args = {"rta": RTA_MAP.get(str(rta).upper(), "")}
+        if re.search("re-*invest", scheme_name, re.I):
+            where.append("name LIKE '%reinvest%'")
+        else:
+            where.append("name NOT LIKE '%reinvest%'")
 
-            if re.search("re-*invest", scheme_name, re.I):
-                where.append("name LIKE '%reinvest%'")
-            else:
-                where.append("name NOT LIKE '%reinvest%'")
+        if match := re.search(r"fti(\d+)", rta_code, re.I):
+            amc_code = match.group(1)
+            where.append("amc_code = :amc_code")
+            args.update(amc_code=amc_code)
+        else:
+            where.append("rta_code = :rta_code")
+            args.update(rta_code=rta_code)
 
-            if match := re.search(r"fti(\d+)", rta_code, re.I):
-                amc_code = match.group(1)
-                where.append("amc_code = :amc_code")
-                args.update(amc_code=amc_code)
-            else:
-                where.append("rta_code = :rta_code")
-                args.update(rta_code=rta_code)
+        sql_statement = "{} WHERE {}".format(sql, " AND ".join(where))
+        results = self.run_query(sql_statement, args)
 
-            sql_statement = "{} WHERE {}".format(sql, " AND ".join(where))
-            self.cursor.execute(sql_statement, args)
-            results = self.cursor.fetchall()
-
-            if len(results) == 0 and "rta_code" in args:
-                args["rta_code"] = args["rta_code"][:-1]
-                self.cursor.execute(sql_statement, args)
-                results = self.cursor.fetchall()
-            return results
-        finally:
-            if self_initialized:
-                self.close()
+        if len(results) == 0 and "rta_code" in args:
+            args["rta_code"] = args["rta_code"][:-1]
+            results = self.run_query(sql_statement, args)
+        return results
 
     def isin_lookup(
         self, scheme_name: str, rta: str, rta_code: str, min_score: int = 75
@@ -133,3 +138,14 @@ class MFISINDb:
                     name=name, isin=isin, amfi_code=amfi_code, type=scheme_type, score=score
                 )
         raise ValueError("No schemes found")
+
+    def nav_lookup(self, isin: str) -> Optional[Decimal]:
+        """
+        Return the NAV of the fund on 31st Jan 2018. used for LTCG computations
+        :param isin: Fund ISIN
+        :return: nav value as a Decimal if available, else return None
+        """
+        sql = """SELECT nav FROM nav20180131 where isin = :isin"""
+        result = self.run_query(sql, {"isin": isin}, fetchone=True)
+        if result is not None:
+            return Decimal(result["nav"])

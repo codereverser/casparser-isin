@@ -1,4 +1,5 @@
 import csv
+from decimal import Decimal
 from pathlib import Path
 
 # noinspection PyPackageRequirements
@@ -46,3 +47,15 @@ class TestISINSearch:
         assert data.type == "DEBT"
 
         assert db.connection is None
+
+    def test_nav_lookup(self):
+        with MFISINDb() as db:
+            for isin, actual_nav in (
+                ("INF209K01BS7", Decimal("151.06")),
+                ("INF090I01635", Decimal("15.7036")),
+            ):
+                nav = db.nav_lookup(isin)
+                assert nav == actual_nav
+
+            nav = db.nav_lookup("invalid_isin")
+            assert nav is None
