@@ -1,5 +1,9 @@
 # Changelog
 
+## 2021.7.1 - 2021-07-01
+- add scheme type (`EQUITY`/`DEBT`) to `SchemeData`
+- add nav table for looking up scheme nav for 31-Jan-2018
+
 ## 2021.6.1 - 2021-06-01
 - support for using custom isin database via `CASPARSER_ISIN_DB` environment variable.
 - updated isin.db
