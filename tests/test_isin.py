@@ -22,7 +22,7 @@ class TestISINSearch:
                 name, rta, rta_code, _, isin, amfi = row
                 scheme_data = db.isin_lookup(name, rta, rta_code)
                 assert isin == scheme_data.isin
-                assert amfi == scheme_data.amfi_code
+                assert amfi == (scheme_data.amfi_code or "")
 
         assert db.connection is None
 
