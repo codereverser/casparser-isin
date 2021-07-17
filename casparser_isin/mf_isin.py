@@ -98,13 +98,8 @@ class MFISINDb:
         else:
             where.append("name NOT LIKE '%reinvest%'")
 
-        if match := re.search(r"fti(\d+)", rta_code, re.I):
-            amc_code = match.group(1)
-            where.append("amc_code = :amc_code")
-            args.update(amc_code=amc_code)
-        else:
-            where.append("rta_code = :rta_code")
-            args.update(rta_code=rta_code)
+        where.append("rta_code = :rta_code")
+        args.update(rta_code=rta_code)
 
         sql_statement = "{} WHERE {}".format(sql, " AND ".join(where))
         results = self.run_query(sql_statement, args)
