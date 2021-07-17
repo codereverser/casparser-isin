@@ -81,6 +81,16 @@ class MFISINDb:
 
         sql = """SELECT name, isin, amfi_code, type from scheme"""
         where = ["rta = :rta"]
+
+        if re.search(r"fti(\d+)", rta_code, re.I) and rta.upper() in ("CAMS", "FRANKLIN", "FTAMIL"):
+            # Try searching db for Franklin schemes
+            where.append("rta_code = :rta_code")
+            args = {"rta": "FRANKLIN", "rta_code": rta_code}
+            sql_statement = "{} WHERE {}".format(sql, " AND ".join(where))
+            results = self.run_query(sql_statement, args)
+            if len(results) != 0:
+                return results
+
         args = {"rta": RTA_MAP.get(str(rta).upper(), "")}
 
         if re.search("re-*invest", scheme_name, re.I):
