@@ -93,17 +93,18 @@ class MFISINDb:
 
         args = {"rta": RTA_MAP.get(str(rta).upper(), "")}
 
-        if re.search("re-*invest", scheme_name, re.I):
-            where.append("name LIKE '%reinvest%'")
+        if "hdfc" in scheme_name.lower() and re.search(r"^h\d+$", rta_code, re.I):
+            # Special case for old HDFC funds with scheme codes of format "H\d+"
+            if re.search("re-*invest", scheme_name, re.I):
+                where.append("name LIKE '%reinvest%'")
+            where.append("rta_code like :rta_code")
+            args.update(rta_code=f"{rta_code}%")
         else:
-            where.append("name NOT LIKE '%reinvest%'")
-
-        where.append("rta_code = :rta_code")
-        args.update(rta_code=rta_code)
+            where.append("rta_code = :rta_code")
+            args.update(rta_code=rta_code)
 
         sql_statement = "{} WHERE {}".format(sql, " AND ".join(where))
         results = self.run_query(sql_statement, args)
-
         if len(results) == 0 and "rta_code" in args:
             args["rta_code"] = args["rta_code"][:-1]
             results = self.run_query(sql_statement, args)
