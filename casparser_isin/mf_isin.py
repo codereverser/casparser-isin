@@ -91,17 +91,16 @@ class MFISINDb:
             if len(results) != 0:
                 return results
 
-        args = {"rta": RTA_MAP.get(str(rta).upper(), "")}
+        args = {"rta": RTA_MAP.get(str(rta).upper(), ""), "rta_code": rta_code}
 
         if "hdfc" in scheme_name.lower() and re.search(r"^h\d+$", rta_code, re.I):
             # Special case for old HDFC funds with scheme codes of format "H\d+"
             if re.search("re-*invest", scheme_name, re.I):
                 where.append("name LIKE '%reinvest%'")
-            where.append("rta_code like :rta_code")
-            args.update(rta_code=f"{rta_code}%")
+            where.append("(rta_code = :rta_code OR rta_code = :rta_code_d)")
+            args.update(rta_code_d=f"{rta_code}D")
         else:
             where.append("rta_code = :rta_code")
-            args.update(rta_code=rta_code)
 
         sql_statement = "{} WHERE {}".format(sql, " AND ".join(where))
         results = self.run_query(sql_statement, args)
@@ -111,7 +110,7 @@ class MFISINDb:
         return results
 
     def isin_lookup(
-        self, scheme_name: str, rta: str, rta_code: str, min_score: int = 75
+        self, scheme_name: str, rta: str, rta_code: str, min_score: int = 60
     ) -> SchemeData:
         """
         Return the closest matching scheme from MF isin database.
@@ -133,12 +132,21 @@ class MFISINDb:
         if rta.upper() not in RTA_MAP:
             raise ValueError(f"Invalid RTA : {rta}")
         results = self.scheme_lookup(rta, scheme_name, rta_code)
-        if len(results) > 0:
+        if len(results) == 1:
+            result = results[0]
+            return SchemeData(
+                name=result["name"],
+                isin=result["isin"],
+                amfi_code=result["amfi_code"],
+                type=result["type"],
+                score=100,
+            )
+        elif len(results) > 1:
             schemes = {
                 x["name"]: (x["name"], x["isin"], x["amfi_code"], x["type"]) for x in results
             }
             key, score, _ = process.extractOne(scheme_name, schemes.keys())
-            if score >= min_score or len(results) == 1:
+            if score >= min_score:
                 name, isin, amfi_code, scheme_type = schemes[key]
                 return SchemeData(
                     name=name, isin=isin, amfi_code=amfi_code, type=scheme_type, score=score
