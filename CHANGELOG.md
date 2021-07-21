@@ -1,5 +1,9 @@
 # Changelog
 
+## 2021.7.21 - 2021-07-21
+- better support for Franklin Templeton funds
+- support new CAS pdf files after migration of funds from FTAMIL RTA to CAMS
+
 ## 2021.7.1 - 2021-07-01
 - add scheme type (`EQUITY`/`DEBT`) to `SchemeData`
 - add nav table for looking up scheme nav for 31-Jan-2018
