@@ -93,12 +93,16 @@ class MFISINDb:
 
         args = {"rta": RTA_MAP.get(str(rta).upper(), ""), "rta_code": rta_code}
 
-        if "hdfc" in scheme_name.lower() and re.search(r"^h\d+$", rta_code, re.I):
+        if (
+            "hdfc" in scheme_name.lower()
+            and re.search(r"^h\d+$", rta_code, re.I)
+            and re.search("dividend|idcw", scheme_name, re.I)
+        ):
             # Special case for old HDFC funds with scheme codes of format "H\d+"
             if re.search("re-*invest", scheme_name, re.I):
                 where.append("name LIKE '%reinvest%'")
-            where.append("(rta_code = :rta_code OR rta_code = :rta_code_d)")
-            args.update(rta_code_d=f"{rta_code}D")
+            where.append("rta_code like :rta_code_d")
+            args.update(rta_code_d=f"{rta_code}%")
         else:
             where.append("rta_code = :rta_code")
 
