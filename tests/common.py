@@ -87,7 +87,16 @@ def version_cli(monkeypatch):
     monkeypatch.setattr(
         argparse.ArgumentParser,
         "parse_args",
-        lambda x: argparse.Namespace(update=False, version=True),
+        lambda x: argparse.Namespace(update=False, version=True, check=False),
+    )
+
+
+@pytest.fixture
+def check_cli(monkeypatch):
+    monkeypatch.setattr(
+        argparse.ArgumentParser,
+        "parse_args",
+        lambda x: argparse.Namespace(update=False, version=False, check=True),
     )
 
 
@@ -96,7 +105,7 @@ def help_cli(monkeypatch):
     monkeypatch.setattr(
         argparse.ArgumentParser,
         "parse_args",
-        lambda x: argparse.Namespace(update=False, version=False),
+        lambda x: argparse.Namespace(update=False, version=False, check=False),
     )
 
 
@@ -105,5 +114,5 @@ def update_cli(monkeypatch):
     monkeypatch.setattr(
         argparse.ArgumentParser,
         "parse_args",
-        lambda x: argparse.Namespace(update=True, version=False),
+        lambda x: argparse.Namespace(update=True, version=False, check=False),
     )

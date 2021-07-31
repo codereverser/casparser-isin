@@ -2,9 +2,11 @@ import functools
 import logging
 from urllib import request
 
+import pytest
+
 from casparser_isin import cli
 
-from .common import MockResponse, mockopen, update_cli, version_cli, help_cli
+from .common import MockResponse, mockopen, check_cli, help_cli, update_cli, version_cli
 
 
 class TestCLI:
@@ -30,6 +32,28 @@ class TestCLI:
         captured = capsys.readouterr()
         assert captured.err == ""
         assert isinstance(captured.out, str) and captured.out.startswith("usage: casparser-isin")
+
+    def test_check(self, caplog, check_cli, monkeypatch):
+        def mock_urlopen(request_obj, db_version="3100.01.01", fail_on_urls=None):
+            return MockResponse(
+                request_obj, remote_db_version=db_version, fail_on_urls=fail_on_urls
+            )
+
+        caplog.set_level(logging.INFO)
+        with monkeypatch.context() as m:
+            m.setattr(request, "urlopen", mock_urlopen)
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+            assert exc.type == SystemExit
+            assert exc.value.code == 1
+        assert "To update the database" in caplog.records[-1].message
+
+        with monkeypatch.context() as m:
+            m.setattr(request, "urlopen", functools.partial(mock_urlopen, db_version="1990.01.01"))
+            with pytest.raises(SystemExit) as exc:
+                cli.main()
+            assert exc.type == SystemExit
+            assert exc.value.code == 0
 
     def test_meta_fail(self, monkeypatch, update_cli, caplog, mockopen):
         def mock_urlopen(request_obj, db_version="3099.01.01", fail_on_urls=None):
