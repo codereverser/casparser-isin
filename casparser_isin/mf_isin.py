@@ -84,9 +84,9 @@ class MFISINDb:
 
         if re.search(r"fti(\d+)", rta_code, re.I) and rta.upper() in ("CAMS", "FRANKLIN", "FTAMIL"):
             # Try searching db for Franklin schemes
-            where.append("rta_code = :rta_code")
+            where_ = ["rta = :rta", "rta_code = :rta_code"]
             args = {"rta": "FRANKLIN", "rta_code": rta_code}
-            sql_statement = "{} WHERE {}".format(sql, " AND ".join(where))
+            sql_statement = "{} WHERE {}".format(sql, " AND ".join(where_))
             results = self.run_query(sql_statement, args)
             if len(results) != 0:
                 return results
