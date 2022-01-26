@@ -1,10 +1,13 @@
-from importlib.metadata import version
-import os
+from importlib.metadata import version, PackageNotFoundError
 
-base_dir = os.path.dirname(os.path.abspath(__file__))
-version_filename = os.path.join(base_dir, "VERSION.txt")
-if os.path.exists(version_filename):
-    with open(version_filename) as f:
-        __version__ = f.read()  # local dev
-else:
-    __version__ = version("casparser_isin")  # installed
+FALLBACK_VERSION = "2022.1.1"
+
+
+def get_version():
+    try:
+        return version("casparser_isin")
+    except PackageNotFoundError:
+        return FALLBACK_VERSION  # local development version
+
+
+__version__ = get_version()
