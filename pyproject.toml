@@ -18,19 +18,19 @@ include = [ "CHANGELOG.md" ]
 [tool.poetry.dependencies]
 python = "^3.8"
 packaging = ">=20.9"
-rapidfuzz = "^1.9.0"
+rapidfuzz = "^2.0.0"
 
 [tool.poetry.dev-dependencies]
 coverage = {version = "^6.0", extras=["toml"]}
-pytest = "^6.2.5"
+pytest = "^7.1.0"
 pytest-cov = "^3.0.0"
 apsw-wheels = "^3.36.0"
-b2sdk = "^1.14.0"
-lxml = "^4.7.0"
-python-dotenv = "^0.19.0"
+b2sdk = "^1.16.0"
+lxml = "^4.9.0"
+python-dotenv = "^0.20.0"
 quandl = "^3.7.0"
-requests = "^2.27.0"
-requests-cache = "^0.9.1"
+requests = "^2.28.0"
+requests-cache = "^0.9.4"
 
 [tool.poetry.scripts]
 casparser-isin = "casparser_isin.cli:main"
