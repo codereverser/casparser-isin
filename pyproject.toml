@@ -25,7 +25,7 @@ coverage = {version = "^6.0", extras=["toml"]}
 pytest = "^6.2.5"
 pytest-cov = "^3.0.0"
 apsw-wheels = "^3.36.0"
-b2sdk = "^1.14.0"
+b2sdk = "^1.14.1"
 lxml = "^4.7.0"
 python-dotenv = "^0.19.0"
 quandl = "^3.7.0"
