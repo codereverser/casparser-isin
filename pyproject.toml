@@ -25,10 +25,9 @@ coverage = {version = "^6.0", extras=["toml"]}
 pytest = "^7.1.0"
 pytest-cov = "^3.0.0"
 apsw-wheels = "^3.36.0"
-b2sdk = "^1.16.0"
+b2sdk = "^1.17.0"
 lxml = "^4.9.0"
 python-dotenv = "^0.20.0"
-quandl = "^3.7.0"
 requests = "^2.28.0"
 requests-cache = "^0.9.4"
 
