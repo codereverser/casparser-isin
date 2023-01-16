@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "casparser_isin"
-version = "2022.6.19"
+version = "2023.1.16"
 description = "ISIN database for casparser"
 authors = ["Sandeep Somasekharan <codereverser@gmail.com>"]
 homepage = "https://github.com/codereverser/casparser-isin"

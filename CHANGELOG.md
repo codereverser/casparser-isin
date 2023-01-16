@@ -1,5 +1,8 @@
 # Changelog
 
+## 2023.1.16
+- DB updates
+
 ## 2021.7.21 - 2021-07-21
 - better support for Franklin Templeton funds
 - support new CAS pdf files after migration of funds from FTAMIL RTA to CAMS
