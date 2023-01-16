@@ -2,7 +2,7 @@
 
 [![code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![GitHub](https://img.shields.io/github/license/codereverser/casparser)](https://github.com/codereverser/casparser/blob/main/LICENSE)
-![GitHub Workflow Status](https://img.shields.io/github/workflow/status/codereverser/casparser-isin/run-tests)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/codereverser/casparser-isin/run-pytest.yml?branch=main)
 [![codecov](https://codecov.io/gh/codereverser/casparser-isin/branch/main/graph/badge.svg?token=MQ8ZEVTG1B)](https://codecov.io/gh/codereverser/casparser-isin)
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/casparser-isin)
 
