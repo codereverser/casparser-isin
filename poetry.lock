@@ -43,7 +43,7 @@ tests_no_zope = ["hypothesis", "pympler", "pytest (>=4.3.0)", "pytest-xdist", "c
 
 [[package]]
 name = "b2sdk"
-version = "1.18.0"
+version = "1.19.0"
 description = "Backblaze B2 SDK"
 category = "dev"
 optional = false
