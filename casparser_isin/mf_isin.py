@@ -95,18 +95,23 @@ class MFISINDb:
 
         if (
             "hdfc" in scheme_name.lower()
-            and re.search(r"^h\d+$", rta_code, re.I)
             and re.search("dividend|idcw", scheme_name, re.I)
         ):
             # Special case for old HDFC funds with scheme codes of format "H\d+"
             if re.search("re-*invest", scheme_name, re.I):
                 where.append("name LIKE '%reinvest%'")
+            else:
+                where.append("name LIKE '%payout%'")
+            if re.search("direct", scheme_name, re.I):
+                where.append("name LIKE '%direct%'")
+            else:
+                where.append("name NOT LIKE '%direct%'")
             where.append("rta_code like :rta_code_d")
             args.update(rta_code_d=f"{rta_code}%")
         else:
             where.append("rta_code = :rta_code")
 
-        sql_statement = "{} WHERE {}".format(sql, " AND ".join(where))
+        sql_statement = "{} WHERE {} GROUP BY isin".format(sql, " AND ".join(where))
         results = self.run_query(sql_statement, args)
         if len(results) == 0 and "rta_code" in args:
             args["rta_code"] = args["rta_code"][:-1]

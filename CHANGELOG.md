@@ -1,5 +1,9 @@
 # Changelog
 
+## 2023.8.18
+- fix issues with hdfc mutual fund lookups
+- update database
+
 ## 2023.1.16
 - DB updates
 
