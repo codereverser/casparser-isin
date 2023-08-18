@@ -4,7 +4,7 @@ import re
 import sqlite3
 from typing import Optional
 
-from rapidfuzz import process
+from rapidfuzz import process, utils
 
 from .utils import get_isin_db_path
 
@@ -93,19 +93,17 @@ class MFISINDb:
 
         args = {"rta": RTA_MAP.get(str(rta).upper(), ""), "rta_code": rta_code}
 
-        if (
-            "hdfc" in scheme_name.lower()
-            and re.search("dividend|idcw", scheme_name, re.I)
-        ):
-            # Special case for old HDFC funds with scheme codes of format "H\d+"
-            if re.search("re-*invest", scheme_name, re.I):
-                where.append("name LIKE '%reinvest%'")
-            else:
-                where.append("name LIKE '%payout%'")
+        if "hdfc" in scheme_name.lower():
             if re.search("direct", scheme_name, re.I):
                 where.append("name LIKE '%direct%'")
             else:
                 where.append("name NOT LIKE '%direct%'")
+
+            if re.search("dividend|idcw", scheme_name, re.I):
+                if re.search("re-*invest", scheme_name, re.I):
+                    where.append("name LIKE '%reinvest%'")
+                else:
+                    where.append("name LIKE '%payout%'")
             where.append("rta_code like :rta_code_d")
             args.update(rta_code_d=f"{rta_code}%")
         else:
@@ -154,7 +152,7 @@ class MFISINDb:
             schemes = {
                 x["name"]: (x["name"], x["isin"], x["amfi_code"], x["type"]) for x in results
             }
-            key, score, _ = process.extractOne(scheme_name, schemes.keys())
+            key, score, _ = process.extractOne(scheme_name, schemes.keys(), processor=utils.default_process)
             if score >= min_score:
                 name, isin, amfi_code, scheme_type = schemes[key]
                 return SchemeData(
