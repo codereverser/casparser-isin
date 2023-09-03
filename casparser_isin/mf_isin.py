@@ -68,6 +68,15 @@ class MFISINDb:
             if self_initialized:
                 self.close()
 
+    def direct_isin_lookup(self, isin: str):
+        """
+        Lookup scheme data via ISIN code
+        :param isin: Fund ISIN
+        :return:
+        """
+        sql = """SELECT name, isin, amfi_code, type from scheme WHERE isin = :isin"""
+        return self.run_query(sql, {"isin": isin})
+
     def scheme_lookup(self, rta: str, scheme_name: str, rta_code: str):
         """
         Lookup scheme details from the database
@@ -117,7 +126,12 @@ class MFISINDb:
         return results
 
     def isin_lookup(
-        self, scheme_name: str, rta: str, rta_code: str, min_score: int = 60
+        self,
+        scheme_name: str,
+        rta: str,
+        rta_code: str,
+        isin: Optional[str] = None,
+        min_score: int = 60,
     ) -> SchemeData:
         """
         Return the closest matching scheme from MF isin database.
@@ -125,6 +139,7 @@ class MFISINDb:
         :param scheme_name: Scheme Name
         :param rta: RTA (CAMS, KARVY, KFINTECH)
         :param rta_code: Scheme RTA code
+        :param isin: Fund ISIN
         :param min_score: Minimum score (out of 100) required from the fuzzy match algorithm
 
         :return: isin and amfi_code code for matching scheme.
@@ -138,7 +153,10 @@ class MFISINDb:
             raise TypeError("Invalid input")
         if rta.upper() not in RTA_MAP:
             raise ValueError(f"Invalid RTA : {rta}")
-        results = self.scheme_lookup(rta, scheme_name, rta_code)
+        if isin is not None:
+            results = self.direct_isin_lookup(isin)
+        else:
+            results = self.scheme_lookup(rta, scheme_name, rta_code)
         if len(results) == 1:
             result = results[0]
             return SchemeData(
@@ -152,7 +170,9 @@ class MFISINDb:
             schemes = {
                 x["name"]: (x["name"], x["isin"], x["amfi_code"], x["type"]) for x in results
             }
-            key, score, _ = process.extractOne(scheme_name, schemes.keys(), processor=utils.default_process)
+            key, score, _ = process.extractOne(
+                scheme_name, schemes.keys(), processor=utils.default_process
+            )
             if score >= min_score:
                 name, isin, amfi_code, scheme_type = schemes[key]
                 return SchemeData(

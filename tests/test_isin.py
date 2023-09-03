@@ -24,6 +24,10 @@ class TestISINSearch:
                 assert isin == scheme_data.isin
                 assert amfi == (scheme_data.amfi_code or "")
 
+                direct_isin_lookup_result = db.isin_lookup(name, rta, rta_code, isin=isin)
+                assert scheme_data.isin == direct_isin_lookup_result.isin
+                assert scheme_data.amfi_code == direct_isin_lookup_result.amfi_code
+
         assert db.connection is None
 
     def test_bad_isin(self):

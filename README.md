@@ -11,7 +11,7 @@ ISIN Database for [casparser](https://github.com/codereverser/casparser).
 ## Installation
 ```bash
 pip install -U casparser-isin
-``` 
+```
 
 ## Usage
 
@@ -26,14 +26,14 @@ with MFISINDb() as db:
 print(scheme_data)
 ```
 ```
-SchemeData(name="axis long term equity fund - direct growth", 
-           isin="INF846K01EW2", 
-           amfi_code="120503", 
+SchemeData(name="axis long term equity fund - direct growth",
+           isin="INF846K01EW2",
+           amfi_code="120503",
            score=100.0)
 ```
 
-The database also contains NAV values on 31-Jan-2018 for all funds, which can be used for 
-taxable LTCG computation for units purchased before the same date.  
+The database also contains NAV values on 31-Jan-2018 for all funds, which can be used for
+taxable LTCG computation for units purchased before the same date.
 
 ```
 from casparser_isin import MFISINDb
@@ -48,8 +48,8 @@ Decimal('44.8938')
 
 ## Notes
 
-- casparser-isin is shipped with a local database which may get obsolete over time. The local 
-database can be updated via the cli tool 
+- casparser-isin is shipped with a local database which may get obsolete over time. The local
+database can be updated via the cli tool
 
 ```shell
 casparser-isin --update
