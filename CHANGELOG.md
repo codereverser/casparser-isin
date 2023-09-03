@@ -1,5 +1,9 @@
 # Changelog
 
+## 2023.9.3
+- Lookup scheme via isin
+- update database
+
 ## 2023.8.18
 - fix issues with hdfc mutual fund lookups
 - update database
