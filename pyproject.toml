@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "casparser_isin"
-version = "2023.8.18"
+version = "0"
 description = "ISIN database for casparser"
 authors = ["Sandeep Somasekharan <codereverser@gmail.com>"]
 homepage = "https://github.com/codereverser/casparser-isin"
@@ -24,10 +24,10 @@ rapidfuzz = "^3.2.0"
 coverage = {version = "^7.3.0", extras=["toml"]}
 pytest = "^7.4.0"
 pytest-cov = "^4.1.0"
-apsw = "^3.42.0"
-b2sdk = "^1.23.0"
+apsw = "^3.43.0"
+b2sdk = "^1.24.0"
 lxml = "^4.9.0"
-python-dotenv = "^0.20.0"
+python-dotenv = "^1.0.0"
 requests = "^2.31.0"
 requests-cache = "^1.1.0"
 
@@ -44,7 +44,14 @@ target-version = ["py38"]
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "--cov=casparser_isin --cov-config=tox.ini --cov-report=xml --cov-report=html"
+addopts = "--cov=casparser_isin --cov-config=tox.ini --cov-report=xml --cov-report=html --exitfirst"
 testpaths = [
     "tests",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.poetry-version-plugin]
+source = "init"

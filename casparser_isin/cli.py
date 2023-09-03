@@ -6,7 +6,7 @@ import sys
 from urllib.error import HTTPError
 from urllib import request
 
-from .__version__ import __version__
+from . import __version__
 from .utils import get_isin_db_path
 
 META_URL = "https://casparser.atomcoder.com/isin.db.meta"

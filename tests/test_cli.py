@@ -6,14 +6,13 @@ import pytest
 
 from casparser_isin import cli
 
-from .common import MockResponse, mockopen, check_cli, help_cli, update_cli, version_cli
+from .common import MockResponse
 
 
 class TestCLI:
     """Common test cases for all available parsers."""
 
     def test_version(self, capsys, version_cli):
-
         metadata = cli.get_metadata()
         expected_output = (
             f"cli-version : {metadata['cli-version']}\n"

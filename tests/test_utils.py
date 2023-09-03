@@ -1,5 +1,3 @@
-import pytest
-
 from casparser_isin.utils import get_isin_db_path
 
 
