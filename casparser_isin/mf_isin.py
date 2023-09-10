@@ -153,9 +153,10 @@ class MFISINDb:
             raise TypeError("Invalid input")
         if rta.upper() not in RTA_MAP:
             raise ValueError(f"Invalid RTA : {rta}")
+        results = []
         if isin is not None:
             results = self.direct_isin_lookup(isin)
-        else:
+        if len(results) == 0:
             results = self.scheme_lookup(rta, scheme_name, rta_code)
         if len(results) == 1:
             result = results[0]

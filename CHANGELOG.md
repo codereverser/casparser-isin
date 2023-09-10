@@ -1,5 +1,9 @@
 # Changelog
 
+## 2023.9.10
+- Fallback to old lookup when direct isin search fails
+- update database
+
 ## 2023.9.3
 - Lookup scheme via isin
 - update database
