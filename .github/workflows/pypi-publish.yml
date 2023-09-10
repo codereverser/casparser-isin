@@ -21,6 +21,6 @@ jobs:
       env:
         PYPI_TOKEN: ${{ secrets.PYPI_PASSWORD }}
       run: |
-        poetry self add poetry-version-plugin  
+        poetry self add poetry-version-plugin
         poetry config pypi-token.pypi $PYPI_TOKEN
         poetry publish --build

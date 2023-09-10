@@ -30,6 +30,7 @@ lxml = "^4.9.0"
 python-dotenv = "^1.0.0"
 requests = "^2.31.0"
 requests-cache = "^1.1.0"
+pre-commit = "^3.4.0"
 
 [tool.poetry.scripts]
 casparser-isin = "casparser_isin.cli:main"
