@@ -18,7 +18,7 @@ include = [ "CHANGELOG.md" ]
 [tool.poetry.dependencies]
 python = "^3.8"
 packaging = ">=20.9"
-rapidfuzz = "^3.10.1"
+rapidfuzz = "^3.9.0"
 
 [tool.poetry.dev-dependencies]
 coverage = {version = "^7.3.0", extras=["toml"]}
