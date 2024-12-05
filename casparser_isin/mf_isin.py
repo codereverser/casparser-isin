@@ -1,10 +1,10 @@
-from collections import namedtuple
-from decimal import Decimal
 import re
 import sqlite3
+from collections import namedtuple
+from decimal import Decimal
 from typing import Optional
 
-from rapidfuzz import process, utils
+from rapidfuzz import fuzz, process, utils
 
 from .utils import get_isin_db_path
 
@@ -74,7 +74,9 @@ class MFISINDb:
         :param isin: Fund ISIN
         :return:
         """
-        sql = """SELECT name, isin, amfi_code, type from scheme WHERE isin = :isin"""
+        sql = (
+            """SELECT name, isin, amfi_code, type from scheme WHERE isin = :isin order by id desc"""
+        )
         return self.run_query(sql, {"isin": isin})
 
     def scheme_lookup(self, rta: str, scheme_name: str, rta_code: str):
@@ -118,7 +120,7 @@ class MFISINDb:
         else:
             where.append("rta_code = :rta_code")
 
-        sql_statement = "{} WHERE {} GROUP BY isin".format(sql, " AND ".join(where))
+        sql_statement = "{} WHERE {} order by id desc".format(sql, " AND ".join(where))
         results = self.run_query(sql_statement, args)
         if len(results) == 0 and "rta_code" in args:
             args["rta_code"] = args["rta_code"][:-1]
@@ -172,7 +174,10 @@ class MFISINDb:
                 x["name"]: (x["name"], x["isin"], x["amfi_code"], x["type"]) for x in results
             }
             key, score, _ = process.extractOne(
-                scheme_name, schemes.keys(), processor=utils.default_process
+                scheme_name,
+                schemes.keys(),
+                processor=utils.default_process,
+                scorer=fuzz.token_sort_ratio,
             )
             if score >= min_score:
                 name, isin, amfi_code, scheme_type = schemes[key]

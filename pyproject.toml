@@ -18,7 +18,7 @@ include = [ "CHANGELOG.md" ]
 [tool.poetry.dependencies]
 python = "^3.8"
 packaging = ">=20.9"
-rapidfuzz = "^3.2.0"
+rapidfuzz = "^3.10.1"
 
 [tool.poetry.dev-dependencies]
 coverage = {version = "^7.3.0", extras=["toml"]}
@@ -56,3 +56,11 @@ target-version = "py38"
 
 [tool.poetry-version-plugin]
 source = "init"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.format]
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
