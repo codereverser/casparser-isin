@@ -1,6 +1,6 @@
 # CASParser-ISIN
 
-[![code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![GitHub](https://img.shields.io/github/license/codereverser/casparser)](https://github.com/codereverser/casparser/blob/main/LICENSE)
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/codereverser/casparser-isin/run-pytest.yml?branch=main)
 [![codecov](https://codecov.io/gh/codereverser/casparser-isin/branch/main/graph/badge.svg?token=MQ8ZEVTG1B)](https://codecov.io/gh/codereverser/casparser-isin)
@@ -15,6 +15,7 @@ pip install -U casparser-isin
 
 ## Usage
 
+### Mutual fund ISIN search
 
 ```python
 from casparser_isin import MFISINDb
@@ -32,6 +33,26 @@ SchemeData(name="axis long term equity fund - direct growth",
            score=100.0)
 ```
 
+### Generic ISIN search
+
+```python
+from casparser_isin import ISINDb
+with ISINDb() as db:
+    isin_data = db.isin_lookup('INE009A01021')
+```
+
+```
+ISINData(
+    isin='INE009A01021',
+    name='INFOSYS LIMITED EQ FV RS 5',
+    issuer='INFOSYS LIMITED',
+    type='EQUITY SHARES',
+    status='ACTIVE'
+)
+```
+
+### 31-Jan-2018 NAV search
+
 The database also contains NAV values on 31-Jan-2018 for all funds, which can be used for
 taxable LTCG computation for units purchased before the same date.
 
@@ -44,6 +65,8 @@ print(nav)
 ```
 Decimal('44.8938')
 ```
+
+
 
 
 ## Notes
