@@ -41,10 +41,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["CHANGELOG.md", "casparser_isin/isin.db"]
+include = ["CHANGELOG.md", "casparser_isin"]
 
 [tool.hatch.build.targets.wheel]
-include = ["CHANGELOG.md", "casparser_isin/isin.db"]
+include = ["CHANGELOG.md", "casparser_isin"]
 
 [tool.hatch.version]
 path = "casparser_isin/__init__.py"
