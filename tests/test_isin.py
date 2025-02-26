@@ -5,7 +5,7 @@ from pathlib import Path
 # noinspection PyPackageRequirements
 import pytest
 
-from casparser_isin import MFISINDb
+from casparser_isin import ISINDb, MFISINDb
 
 BASE_DIR = Path(__file__).resolve().parent
 FIXTURES_PATH = BASE_DIR / "fixtures.csv"
@@ -63,3 +63,11 @@ class TestISINSearch:
 
             nav = db.nav_lookup("invalid_isin")
             assert nav is None
+
+    def test_isin(self):
+        with ISINDb() as db:
+            for isin in ("INF209K01BS7", "INF090I01635", "INE009A01021"):
+                assert db.isin_lookup(isin) is not None
+
+            for isin in ("invalid_isin", "INF090I0163"):
+                assert db.isin_lookup(isin) is None
