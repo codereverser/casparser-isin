@@ -2,21 +2,21 @@
 name = "casparser_isin"
 description = "ISIN database for casparser"
 authors = [{ name = "Sandeep Somasekharan", email = "codereverser@gmail.com" }]
-requires-python = "~=3.9"
+requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "packaging>=20.9",
-    "rapidfuzz>=3.12.0,<4",
+    "packaging>=24.0",
+    "rapidfuzz>=3.14.0,<4",
 ]
 dynamic = ["version"]
 
@@ -28,16 +28,16 @@ casparser-isin = "casparser_isin.cli:main"
 
 [dependency-groups]
 dev = [
-    "coverage[toml]>=7.3.0,<8",
-    "pytest>=7.4.0,<8",
-    "pytest-cov>=4.1.0,<5",
-    "apsw>=3.43.0,<4",
-    "b2sdk>=1.24.0,<2",
-    "lxml>=5.3.1,<6",
-    "python-dotenv>=1.0.0,<2",
-    "requests>=2.31.0,<3",
-    "requests-cache>=1.1.0,<2",
-    "pre-commit>=3.4.0,<4",
+    "coverage[toml]>=7.10.0,<8",
+    "pytest>=8.0.0,<10",
+    "pytest-cov>=6.0.0,<8",
+    "apsw>=3.50.0,<4",
+    "b2sdk>=2.10.0,<3",
+    "lxml>=6.0.0,<7",
+    "python-dotenv>=1.1.0,<2",
+    "requests>=2.32.0,<3",
+    "requests-cache>=1.2.0,<2",
+    "pre-commit>=4.0.0,<5",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -53,28 +53,28 @@ path = "casparser_isin/__init__.py"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.black]
-line-length = 100
-target-version = ["py38"]
-
 [tool.pytest.ini_options]
-minversion = "6.0"
-addopts = "--cov=casparser_isin --cov-config=tox.ini --cov-report=xml --cov-report=html --exitfirst"
+minversion = "8.0"
+addopts = "--cov=casparser_isin --cov-report=xml --cov-report=html --exitfirst"
 testpaths = [
     "tests",
 ]
 
+[tool.coverage.run]
+omit = ["casparser_isin/cli.py"]
+
+[tool.coverage.report]
+precision = 2
+
 [tool.ruff]
 line-length = 100
-target-version = "py38"
-
-[tool.poetry-version-plugin]
-source = "init"
+target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.format]
+quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
