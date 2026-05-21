@@ -142,5 +142,11 @@ cython_debug/
 .idea
 .DS_Store
 
+# Build-time cache (legacy location). The default is now under
+# $XDG_CACHE_HOME, but defensive: keep this so an override pointing back into
+# the repo (e.g. CASPARSER_ISIN_TOOLS_CACHE=./tools/.cache) cannot accidentally
+# commit a 100+ MB SQLite cache.
 tools/files/http_cache.sqlite
+tools/.cache/
+tools/.env
 casparser_isin/isin.db.meta
