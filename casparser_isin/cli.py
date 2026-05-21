@@ -1,16 +1,25 @@
 import argparse
+import hashlib
 import logging
-from packaging import version
+import os
 import sqlite3
 import sys
-from urllib.error import HTTPError
+import tempfile
 from urllib import request
+from urllib.error import HTTPError
+
+from packaging import version
 
 from . import __version__
 from .utils import get_isin_db_path
 
 META_URL = "https://casparser.atomcoder.com/isin.db.meta"
 DB_URL = "https://casparser.atomcoder.com/isin.db"
+
+# Stream the DB download in 1 MiB chunks. The DB is ~50 MB; this caps peak
+# memory at ~1 MiB regardless of file size and lets shutil.copyfileobj move
+# bytes straight from socket to disk.
+_DOWNLOAD_CHUNK = 1024 * 1024
 
 
 def get_metadata():
@@ -40,7 +49,7 @@ def print_version():
 
 def build_request(url):
     hdr = {
-        "User Agent": f"casparser-isin {__version__}",
+        "User-Agent": f"casparser-isin/{__version__}",
         "X-origin-casparser": "true",
     }
     return request.Request(url, headers=hdr)
@@ -88,6 +97,41 @@ def check_isin_db():
         sys.exit(0)
 
 
+def _download_to_temp(url: str, dest_dir, *, expected_sha256: str | None = None):
+    """
+    Stream ``url`` into a temp file alongside ``dest_dir`` and return its path.
+
+    Streaming avoids holding the entire ~50 MB DB in memory. Writing to a temp
+    file in the same directory as the final destination guarantees the
+    subsequent ``os.replace`` is atomic (same filesystem). If
+    ``expected_sha256`` is supplied, the download is verified and the temp file
+    deleted on mismatch.
+    """
+    fd, tmp_path = tempfile.mkstemp(prefix="isin.db.", suffix=".tmp", dir=str(dest_dir))
+    sha = hashlib.sha256()
+    try:
+        with request.urlopen(build_request(url)) as response, os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = response.read(_DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                sha.update(chunk)
+                out.write(chunk)
+        if expected_sha256 is not None:
+            actual = sha.hexdigest()
+            if actual.lower() != expected_sha256.lower():
+                raise ValueError(f"SHA256 mismatch: expected {expected_sha256}, got {actual}")
+    except BaseException:
+        # Make sure we don't leave half-written temp files behind on any failure
+        # path (including KeyboardInterrupt).
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return tmp_path
+
+
 def update_isin_db():
     remote_meta, local_meta = get_isin_db_details()
     if remote_meta is None:
@@ -97,14 +141,27 @@ def update_isin_db():
         and remote_meta["dbformat"] == local_meta["dbformat"]
     ):
         logging.info("Fetching database version :: %s", remote_meta["version"])
+        dest = get_isin_db_path()
+        dest_dir = dest.parent
         try:
-            with request.urlopen(build_request(DB_URL)) as response:
-                data = response.read()
+            tmp_path = _download_to_temp(
+                DB_URL,
+                dest_dir,
+                expected_sha256=remote_meta.get("sha256"),
+            )
         except HTTPError as e:
             logging.error("Error fetching isin database :: %s", e.reason)
             return
-        with open(get_isin_db_path(), "wb") as f:
-            f.write(data)
+        except ValueError as e:
+            logging.error("Database integrity check failed :: %s", e)
+            return
+        except OSError as e:
+            logging.error("Error writing isin database :: %s", e)
+            return
+        # Atomic swap: os.replace is atomic when source and destination are on
+        # the same filesystem (guaranteed because the temp file was created in
+        # dest_dir).
+        os.replace(tmp_path, dest)
         logging.info("Updated casparser-isin database.")
     else:
         logging.info("casparser-isin database is already upto date")

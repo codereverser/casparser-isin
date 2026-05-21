@@ -14,13 +14,14 @@ class ISINData(NamedTuple):
 class ISINDb(DB):
     """ISIN database for all instruments."""
 
-    def isin_lookup(self, isin: str):
+    def isin_lookup(self, isin: str) -> ISINData | None:
         """
-        Lookup ISIN details from the database
+        Lookup ISIN details from the database.
+
         :param isin: ISIN code
-        :return:
+        :return: ISINData if found, else None.
         """
-        sql = """SELECT * from isin WHERE isin = :isin"""
+        sql = "SELECT isin, name, issuer, type, status FROM isin WHERE isin = :isin"
         row = self.run_query(sql, {"isin": isin}, fetchone=True)
         if row is not None:
             return ISINData(**row)
