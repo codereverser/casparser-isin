@@ -1,33 +1,50 @@
+import logging
 import os
 import pathlib
 import sqlite3
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 INTERNAL_ISIN_DB_PATH = BASE_DIR / "isin.db"
 
 
-def get_isin_db_path():
+def get_isin_db_path() -> pathlib.Path:
+    """
+    Resolve the ISIN database path.
+
+    Order of precedence:
+
+    1. ``CASPARSER_ISIN_DB`` env var, if it points at an existing file.
+    2. The DB bundled with the wheel at :data:`INTERNAL_ISIN_DB_PATH`.
+
+    If the env var is set but unusable (missing file, a directory, etc.) a
+    warning is logged and the bundled DB is returned.
+    """
     env_isin_path = os.getenv("CASPARSER_ISIN_DB")
-    try:
-        if os.path.exists(env_isin_path) and os.path.isfile(env_isin_path):
-            return pathlib.Path(env_isin_path)
-    except TypeError:
-        pass
+    if env_isin_path:
+        candidate = pathlib.Path(env_isin_path)
+        if candidate.is_file():
+            return candidate
+        logger.warning(
+            "CASPARSER_ISIN_DB is set to %r but the path is not a readable file; "
+            "falling back to bundled database at %s",
+            env_isin_path,
+            INTERNAL_ISIN_DB_PATH,
+        )
     return INTERNAL_ISIN_DB_PATH
 
 
 def dict_factory(cursor, row):
-    d = {}
-    for idx, col in enumerate(cursor.description):
-        d[col[0]] = row[idx]
-    return d
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
 
 class DB:
     """Base class for database queries."""
 
-    connection = None
-    cursor = None
+    def __init__(self):
+        self.connection: sqlite3.Connection | None = None
+        self.cursor: sqlite3.Cursor | None = None
 
     def __enter__(self):
         self.initialize()
