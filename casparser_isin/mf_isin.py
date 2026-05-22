@@ -1,3 +1,4 @@
+import logging
 import re
 from decimal import Decimal
 from typing import NamedTuple
@@ -5,6 +6,8 @@ from typing import NamedTuple
 from rapidfuzz import fuzz, process, utils
 
 from .utils import DB
+
+logger = logging.getLogger(__name__)
 
 RTA_MAP = {
     "CAMS": "CAMS",
@@ -106,33 +109,71 @@ class MFISINDb(DB):
         min_score: int = 60,
     ) -> SchemeData:
         """
-        Return the closest matching scheme from MF isin database.
+        Return the closest matching scheme from the MF ISIN database.
 
-        :param scheme_name: Scheme Name
-        :param rta: RTA (CAMS, KARVY, KFINTECH)
-        :param rta_code: Scheme RTA code
-        :param isin: Fund ISIN
-        :param min_score: Minimum score (out of 100) required from the fuzzy match algorithm
+        Lookup priority (ISIN-first):
 
-        :return: isin and amfi_code code for matching scheme.
-        :rtype: SchemeData
+        1. **By ISIN** -- when ``isin`` is supplied and matches one or more
+           rows in the ``scheme`` table. Empirical audit across 8 years of
+           CAS files (CAMS, Kfintech, NSDL, CDSL) shows ISIN is present on
+           100% of holdings, so this path covers the common case. If
+           multiple rows share the same ISIN (e.g., scheme rename
+           preserved as separate baseline rows), fuzzy-disambiguate within
+           that ISIN-matched set using ``scheme_name``.
+
+        2. **By (rta, rta_code)** -- legacy fallback. Used when ``isin``
+           is ``None`` or returns no DB match. Handles old CAS statements
+           that pre-date universal ISIN inclusion and parse-failure
+           edge cases. Internally also runs the HDFC / Franklin special
+           cases that historically required scheme_name + rta_code joins.
+           Depends on data sourced from BSE; degrades gracefully if that
+           data ever goes stale (see ``CASPARSER_ISIN_TOOLS_NO_BSE`` in
+           the build pipeline).
+
+        3. **Fuzzy on scheme_name** -- last-resort disambiguation when
+           any of the above paths return multiple candidates.
+
+        :param scheme_name: Scheme Name (used as the fuzzy-match key when
+            multiple rows are returned).
+        :param rta: RTA (CAMS, KARVY, KFINTECH).
+        :param rta_code: Scheme RTA code.
+        :param isin: Fund ISIN. **Strongly recommended** -- when supplied,
+            this is the primary lookup key.
+        :param min_score: Minimum score (out of 100) required from the
+            fuzzy-match algorithm.
+
+        :return: matching scheme. ``score`` is 100 when the match was by
+            ISIN or exact rta_code; otherwise it's the fuzzy score.
         :raises TypeError: if any of scheme_name/rta/rta_code is not a string.
-        :raises ValueError: if rta is unknown or no scheme is found in the database.
+        :raises ValueError: if rta is unknown or no scheme is found.
         """
-
         if not (
             isinstance(scheme_name, str) and isinstance(rta, str) and isinstance(rta_code, str)
         ):
             raise TypeError("Invalid input")
         if rta.upper() not in RTA_MAP:
             raise ValueError(f"Invalid RTA : {rta}")
+
+        # Path 1: ISIN-first.
         results = []
+        match_path = "rta_code"  # tracked for debug logging
         if isin is not None:
             results = self.direct_isin_lookup(isin)
-        if len(results) == 0:
+            if results:
+                match_path = "isin"
+
+        # Path 2: legacy (rta, rta_code) + HDFC/Franklin special cases.
+        if not results:
             results = self.scheme_lookup(rta, scheme_name, rta_code)
+
         if len(results) == 1:
             result = results[0]
+            logger.debug(
+                "isin_lookup matched via %s: isin=%s name=%r",
+                match_path,
+                result["isin"],
+                result["name"],
+            )
             return SchemeData(
                 name=result["name"],
                 isin=result["isin"],
@@ -140,7 +181,9 @@ class MFISINDb(DB):
                 type=result["type"],
                 score=100,
             )
-        elif len(results) > 1:
+
+        if len(results) > 1:
+            # Path 3: fuzzy disambiguation within the candidate set.
             schemes = {
                 x["name"]: (x["name"], x["isin"], x["amfi_code"], x["type"]) for x in results
             }
@@ -151,10 +194,22 @@ class MFISINDb(DB):
                 scorer=_FUZZ_SCORER,
             )
             if score >= min_score:
-                name, isin, amfi_code, scheme_type = schemes[key]
-                return SchemeData(
-                    name=name, isin=isin, amfi_code=amfi_code, type=scheme_type, score=score
+                name, matched_isin, amfi_code, scheme_type = schemes[key]
+                logger.debug(
+                    "isin_lookup matched via %s+fuzzy(%d): isin=%s name=%r",
+                    match_path,
+                    score,
+                    matched_isin,
+                    name,
                 )
+                return SchemeData(
+                    name=name,
+                    isin=matched_isin,
+                    amfi_code=amfi_code,
+                    type=scheme_type,
+                    score=score,
+                )
+
         raise ValueError("No schemes found")
 
     def nav_lookup(self, isin: str) -> Decimal | None:

@@ -106,12 +106,53 @@ duplicated elsewhere.
 The set lives in `KEEP_TYPES` in `cptools/fetchers/isin.py`. If a new
 instrument starts appearing in CAS files, add it there.
 
+## BSE is optional
+
+BSE StarMF is the source for the `rta_code` mapping. The library's
+lookup code is ISIN-first since v1.0 — every modern CAS file carries an
+ISIN on every holding (empirical audit: 100% across 8 years of
+statements, 707 rows from CAMS / Kfintech / NSDL / CDSL). The
+BSE-derived `rta_code` table is a fallback path used only for older
+statements or rare parse-failure edge cases.
+
+This makes BSE *optional* at build time:
+
+- **A failed BSE fetch does not abort the run.** The orchestrator catches
+  any exception, logs it at WARNING, and continues with empty `bse_rows`.
+  Baseline carry-forward keeps the existing `rta_code` data alive until
+  BSE is healthy again.
+- **`CASPARSER_ISIN_TOOLS_NO_BSE=1`** explicitly skips the BSE fetch.
+  Useful when the BSE form layout changes, the upstream is unreachable,
+  or you simply want a build that depends only on AMFI + captn3m0.
+
+### Building without BSE
+
+Shipping a build without BSE is a small operation:
+
+1. Set `CASPARSER_ISIN_TOOLS_NO_BSE=1` in the cron secret store.
+2. Trigger a manual build (`workflow_dispatch` with `--no-upload` if
+   available) to validate end-to-end. The merge-stats log line should
+   show `bse_status=disabled`.
+3. Re-run without `--no-upload` so the resulting DB is published.
+   Existing `rta_code` entries persist (baseline carry-forward); they
+   just stop refreshing.
+4. Cut a `casparser-isin` release noting the change. The library API
+   is unchanged; users who never used the `rta_code` fallback see no
+   difference.
+5. Optional cleanup (separate change, requires `dbformat=2` bump):
+   drop the `rta`, `rta_code`, `amc_code` columns from the scheme table.
+
+The library continues to work — the ISIN-first lookup path covers every
+modern CAS file. Only the fallback `(rta, rta_code)` lookups (used for
+very old / parse-failure cases) gradually go stale.
+
 ## Environment variables
 
 | Variable | Purpose |
 |---|---|
 | `CASPARSER_ISIN_TOOLS_CACHE` | Override HTTP cache directory (default: `$XDG_CACHE_HOME/casparser-isin-tools` or `~/.cache/casparser-isin-tools`) |
 | `CASPARSER_ISIN_TOOLS_NO_CACHE` | Set to `1` to disable the HTTP cache (recommended for cron) |
+| `CASPARSER_ISIN_TOOLS_NO_BSE` | Set to `1` to skip the BSE scrape entirely |
 | `B2_APP_ID`, `B2_APP_KEY`, `B2_BUCKET` | Backblaze credentials for the meta + db upload step |
 
 ## Tests
@@ -143,16 +184,26 @@ the day's NAV by 23:00 IST so this gives a comfortable buffer).
 Each run logs structured per-source counts at `INFO`:
 
 ```
-BSE source: parsed=N skipped=N kept=N
-scheme merge: N rows total | baseline_kept=N bse_new=N bse_reconfirmed=N \
-              franklin_new=N franklin_reconfirmed=N baseline_dropped=N
+BSE source: parsed=N skipped=N kept=N                         # only when bse_status=ok
+scheme merge: N rows total | baseline_kept=N bse_status=ok    \
+              bse_new=N bse_reconfirmed=N franklin_new=N      \
+              franklin_reconfirmed=N baseline_dropped=N
 isin merge:   N rows total | baseline_kept=N live_new=N live_reconfirmed=N \
               baseline_cleanup=N in_scope_dropped=N
 Row-count guard OK: scheme N->N, isin N (in-scope baseline)->N, nav N->N
 ```
 
+`bse_status` is one of:
+
+- `ok` — BSE was consulted and rows were produced
+- `disabled` — `CASPARSER_ISIN_TOOLS_NO_BSE=1` was set
+- `failed` — BSE raised an exception; run continued without it (an
+  ERROR-level "BSE fetch failed this run" log accompanies this)
+
 Alert conditions (anything at `ERROR`):
 
 - `baseline_dropped != 0` for the scheme merge — append-only violation
 - `in_scope_dropped != 0` for the isin merge — append-only violation
+- `bse_status=failed` — BSE went sideways; not fatal, but the operator
+  should look at the captured exception
 - `RowCountGuardError` raised — feed degraded; investigate before re-running

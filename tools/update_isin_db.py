@@ -44,6 +44,7 @@ from cptools.settings import (
     DATA_DIR,
     ISIN_DB_PATH,
     ISIN_META_PATH,
+    bse_disabled,
     configure_logging,
     logger,
 )
@@ -263,6 +264,7 @@ def _log_scheme_merge_stats(
     bse_rows: dict,
     franklin_rows: dict,
     merged: list,
+    bse_status: str = "ok",
 ) -> None:
     """Emit per-source breakdown for the scheme merge.
 
@@ -274,6 +276,10 @@ def _log_scheme_merge_stats(
       exist in the baseline (genuinely new schemes).
     - ``bse_reconfirmed`` / ``franklin_reconfirmed`` count rows that
       matched a baseline dedupe_key (last_seen got bumped).
+    - ``bse_status`` is one of ok / disabled / failed (see
+      :func:`_fetch_bse_optional`). It does NOT abort the run; the cron
+      stays green even when BSE goes sideways. ``failed`` escalates to
+      ERROR so it lights up in cron mail.
     """
     baseline_keys = {r.dedupe_key() for r in baseline.values()}
     bse_keys = {r.dedupe_key() for r in bse_rows.values()}
@@ -288,17 +294,21 @@ def _log_scheme_merge_stats(
     franklin_reconfirmed = len(franklin_keys & baseline_keys)
 
     logger.info(
-        "scheme merge: %d rows total | baseline_kept=%d bse_new=%d "
+        "scheme merge: %d rows total | baseline_kept=%d bse_status=%s bse_new=%d "
         "bse_reconfirmed=%d franklin_new=%d franklin_reconfirmed=%d "
         "baseline_dropped=%d",
         len(merged),
         baseline_kept,
+        bse_status,
         bse_new,
         bse_reconfirmed,
         franklin_new,
         franklin_reconfirmed,
         baseline_dropped,
     )
+    if bse_status == "failed":
+        # Run continues, but the operator should know.
+        logger.error("BSE fetch failed this run; rta_code data is stale")
     if baseline_dropped != 0:
         # Append-only contract violation. The row-count guard should also
         # catch this, but log at ERROR so it's visible in cron mail.
@@ -347,6 +357,56 @@ def _log_isin_merge_stats(
         )
 
 
+def _fetch_bse_optional(
+    session,
+    amfi_codes: dict,
+    baseline_amfi_map: dict,
+    sebi_categories: dict,
+) -> tuple[dict, str]:
+    """Fetch + parse BSE; tolerate failure and an explicit env-var skip.
+
+    Returns ``(bse_rows, bse_status)`` where ``bse_status`` is one of:
+
+    - ``"ok"``     -- BSE was consulted and rows were produced
+    - ``"disabled"`` -- ``CASPARSER_ISIN_TOOLS_NO_BSE`` was set; BSE not consulted
+    - ``"failed"`` -- BSE raised (network, WAF, schema change, etc.); the
+                     exception is logged at WARNING and the run continues
+                     with zero new BSE rows. Baseline carry-forward keeps
+                     the existing rta_code data alive.
+
+    The library's lookup code is ISIN-first since v1.0, so a stale or
+    missing BSE refresh degrades a *fallback* path, not the primary one.
+    Keeping the cron resilient to BSE outages is more valuable than the
+    daily rta_code refresh.
+    """
+    if bse_disabled():
+        logger.info("BSE disabled via CASPARSER_ISIN_TOOLS_NO_BSE; skipping")
+        return {}, "disabled"
+
+    try:
+        bse_csvs = fetch_bse_master_data(session)
+        bse_rows, total_bse, skipped_bse = build_rows_from_bse(
+            bse_csvs,
+            amfi_codes,
+            baseline_amfi_map,
+            sebi_categories=sebi_categories,
+        )
+        logger.info(
+            "BSE source: parsed=%d skipped=%d kept=%d",
+            total_bse,
+            skipped_bse,
+            len(bse_rows),
+        )
+        return bse_rows, "ok"
+    except Exception:
+        # Catch everything: BSE has many failure modes (Cloudflare interstitial,
+        # form-layout change, network timeout, lxml parse error, etc.). None of
+        # them should kill the build -- baseline carry-forward keeps the DB
+        # serviceable while the operator investigates.
+        logger.warning("BSE fetch failed; continuing without fresh rta_code refresh", exc_info=True)
+        return {}, "failed"
+
+
 def build_pipeline() -> sqlite3.Connection:
     """Fetch everything and return a populated in-memory connection."""
     session = get_session()
@@ -355,24 +415,17 @@ def build_pipeline() -> sqlite3.Connection:
     baseline_rows, baseline_amfi_map = read_baseline(ISIN_DB_PATH)
 
     amfi_payload = get_amfi_isin_map(session)
-    bse_csvs = fetch_bse_master_data(session)
     fresh_isin_rows = get_isin_data(session)  # already filtered + normalised
 
-    bse_rows, total_bse, skipped_bse = build_rows_from_bse(
-        bse_csvs,
-        amfi_payload["codes"],
-        baseline_amfi_map,
+    bse_rows, bse_status = _fetch_bse_optional(
+        session,
+        amfi_codes=amfi_payload["codes"],
+        baseline_amfi_map=baseline_amfi_map,
         sebi_categories=amfi_payload["categories"],
     )
     franklin_rows = build_rows_from_franklin(DATA_DIR / "franklin_funds.csv")
     rows = merge_rows(baseline_rows, bse_rows, franklin_rows)
-    logger.info(
-        "BSE source: parsed=%d skipped=%d kept=%d",
-        total_bse,
-        skipped_bse,
-        len(bse_rows),
-    )
-    _log_scheme_merge_stats(baseline_rows, bse_rows, franklin_rows, rows)
+    _log_scheme_merge_stats(baseline_rows, bse_rows, franklin_rows, rows, bse_status=bse_status)
 
     # --- isin table -------------------------------------------------------
     # Append-only merge: baseline rows of in-scope types are preserved, live

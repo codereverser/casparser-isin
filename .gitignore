@@ -151,3 +151,5 @@ tools/.cache/
 tools/.env
 casparser_isin/isin.db.meta
 *.swp
+
+AGENTS.md
