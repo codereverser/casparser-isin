@@ -65,8 +65,12 @@ class TestISINSearch:
             assert nav is None
 
     def test_isin(self):
+        # ISINDb covers the generic `isin` table, scoped to retail-relevant
+        # instrument types (equities / bonds / preference shares / etc.).
+        # Mutual fund unit ISINs (INF-prefix) live in the `scheme` table and
+        # are intentionally absent here -- use MFISINDb to look them up.
         with ISINDb() as db:
-            for isin in ("INF209K01BS7", "INF090I01635", "INE009A01021"):
+            for isin in ("INE009A01021", "INE001A01036", "INE001A07629"):
                 assert db.isin_lookup(isin) is not None
 
             for isin in ("invalid_isin", "INF090I0163"):
