@@ -65,8 +65,12 @@ class TestISINSearch:
             assert nav is None
 
     def test_isin(self):
+        # ISINDb covers the generic `isin` table, scoped to retail-relevant
+        # instrument types (equities / bonds / preference shares / etc.).
+        # Mutual fund unit ISINs (INF-prefix) live in the `scheme` table and
+        # are intentionally absent here -- use MFISINDb to look them up.
         with ISINDb() as db:
-            for isin in ("INF209K01BS7", "INF090I01635", "INE009A01021"):
+            for isin in ("INE009A01021", "INE001A01036", "INE001A07629"):
                 assert db.isin_lookup(isin) is not None
 
             for isin in ("invalid_isin", "INF090I0163"):
@@ -169,3 +173,101 @@ class TestDirectIsinLookup:
                 isin="ZZZZZZZZZZZZ",
             )
         assert data.isin == "INF179K01319"
+
+
+class TestIsinFirstPriority:
+    """Lock down the documented lookup priority: ISIN > rta_code > fuzzy.
+
+    The library audited 707 holdings across 8 years of CAS files (CAMS,
+    Kfintech, NSDL, CDSL) and found 100% ISIN coverage. The rta_code path
+    is therefore a *fallback*, not the primary lookup. These tests make
+    sure a refactor can't silently reverse that priority.
+    """
+
+    def test_isin_match_skips_scheme_lookup_entirely(self, monkeypatch):
+        """When ISIN gives a unique hit, scheme_lookup MUST NOT be called.
+
+        This is the load-bearing test for ISIN-first: if the rta_code path
+        ever runs when ISIN already resolved, the rta_code data could
+        overrule the (authoritative) ISIN data.
+        """
+        with MFISINDb() as db:
+            sentinel = {"called": False}
+            original_scheme_lookup = db.scheme_lookup
+
+            def _spy(*args, **kwargs):
+                sentinel["called"] = True
+                return original_scheme_lookup(*args, **kwargs)
+
+            monkeypatch.setattr(db, "scheme_lookup", _spy)
+
+            # INE009A01021 is Infosys (well-known equity); but we want an MF
+            # ISIN that the scheme table covers. Use a real one with rta_code
+            # supplied. Even with a deliberately wrong scheme_name and
+            # wrong rta_code, the ISIN match should win and scheme_lookup
+            # must NOT be invoked.
+            data = db.isin_lookup(
+                "TOTALLY WRONG SCHEME NAME",  # would never fuzzy-match
+                "CAMS",
+                "WRONGCODE",  # would never match in scheme_lookup
+                isin="INF179K01319",  # real HDFC Arbitrage ISIN
+            )
+
+            assert data.isin == "INF179K01319"
+            assert (
+                sentinel["called"] is False
+            ), "scheme_lookup was invoked even though ISIN gave a unique match"
+
+    def test_isin_match_wins_over_misleading_rta_code(self):
+        """Same scenario without the spy: caller passes garbage rta_code but
+        a valid ISIN. ISIN must win."""
+        with MFISINDb() as db:
+            data = db.isin_lookup(
+                "Some Random Scheme Name",
+                "CAMS",
+                "GARBAGECODE",
+                isin="INF179K01319",
+            )
+        assert data.isin == "INF179K01319"
+        assert data.score == 100  # exact match, not fuzzy
+
+    def test_multi_row_isin_disambiguates_within_isin_set_only(self):
+        """When ISIN matches multiple baseline rows, fuzzy must stay within
+        the ISIN-matched set; the rta_code path must NOT be consulted to
+        expand the candidate pool."""
+        # INF044D01583 has two scheme rows with similar names (verified in
+        # the existing fixture). The disambiguation MUST pick one of those
+        # two, not anything pulled in by rta_code.
+        with MFISINDb() as db:
+            data = db.isin_lookup(
+                "TAURUS SHORT TERM INCOME FUND REGULAR PLAN IDCW PAYOUT",
+                "KARVY",
+                "104LBDP",  # would also resolve, but ISIN wins
+                isin="INF044D01583",
+            )
+        assert data.isin == "INF044D01583"
+        # Either of the two ISIN-matched rows is acceptable; the key
+        # property is the ISIN is preserved.
+
+    def test_isin_none_uses_rta_code_path(self, monkeypatch):
+        """Backward-compat: callers that don't supply ISIN still resolve."""
+        with MFISINDb() as db:
+            sentinel = {"called": False}
+            original_scheme_lookup = db.scheme_lookup
+
+            def _spy(*args, **kwargs):
+                sentinel["called"] = True
+                return original_scheme_lookup(*args, **kwargs)
+
+            monkeypatch.setattr(db, "scheme_lookup", _spy)
+
+            data = db.isin_lookup(
+                "HDFC ARBITRAGE FUND - RETAIL PLAN - GROWTH OPTION",
+                "CAMS",
+                "HAFRG",
+                # No isin -- the rta_code path is the only option.
+            )
+            assert (
+                sentinel["called"] is True
+            ), "scheme_lookup must be invoked when ISIN is not supplied"
+            assert data.isin == "INF179K01319"

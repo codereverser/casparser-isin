@@ -18,7 +18,7 @@ class MockResponse(HTTPResponse):
         self,
         mock_request: request.Request,
         remote_db_version="2000.01.01",
-        remote_dbformat="1",
+        remote_dbformat="2",
         fail_on_urls=None,
         db_payload=b"mock_data",
     ):

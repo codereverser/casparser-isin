@@ -31,13 +31,15 @@ dev = [
     "coverage[toml]>=7.10.0,<8",
     "pytest>=8.0.0,<10",
     "pytest-cov>=6.0.0,<8",
-    "apsw>=3.50.0,<4",
+    "pre-commit>=4.0.0,<5",
+]
+# Build-time tooling for refreshing isin.db. Not needed at runtime.
+# Install via `uv sync --group tools`.
+tools = [
     "b2sdk>=2.10.0,<3",
     "lxml>=6.0.0,<7",
-    "python-dotenv>=1.1.0,<2",
     "requests>=2.32.0,<3",
     "requests-cache>=1.2.0,<2",
-    "pre-commit>=4.0.0,<5",
 ]
 
 [tool.hatch.build.targets.sdist]
