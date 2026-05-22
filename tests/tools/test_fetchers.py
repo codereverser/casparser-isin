@@ -9,6 +9,7 @@ from __future__ import annotations
 import textwrap
 
 from cptools.fetchers.amfi import parse_2018_nav_file, parse_amfi_nav_text
+from cptools.fetchers.isin import KEEP_TYPES, parse_isin_csv
 
 
 def test_parse_amfi_nav_text_extracts_isin_and_reinvest_flag():
@@ -162,3 +163,206 @@ def test_parse_2018_nav_file(tmp_path):
     assert out["navs"]["INF000000002"] == "120"
     # Single-isin row keeps single nav
     assert out["navs"]["INF000000003"] == "55"
+
+
+# -----------------------------------------------------------------------------
+# captn3m0 ISIN CSV: type filter + casing normalisation
+# -----------------------------------------------------------------------------
+
+
+def _isin_csv(*rows: dict[str, str]) -> str:
+    """Render rows as a CSV matching the captn3m0/india-isin-data format."""
+    header = "ISIN,Description,Issuer,Type,Status"
+    lines = [header]
+    for row in rows:
+        lines.append(
+            ",".join(
+                [
+                    row["ISIN"],
+                    row["Description"],
+                    row["Issuer"],
+                    row["Type"],
+                    row["Status"],
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
+def test_parse_isin_csv_keeps_in_scope_types():
+    csv_text = _isin_csv(
+        {
+            "ISIN": "INE001A01036",
+            "Description": "HDFC LIMITED EQ FV RS 2",
+            "Issuer": "HDFC LIMITED",
+            "Type": "EQUITY SHARES",
+            "Status": "ACTIVE",
+        },
+        {
+            "ISIN": "INE001A07Z47",
+            "Description": "HDFC NCD",
+            "Issuer": "HDFC LIMITED",
+            "Type": "DEBENTURE",
+            "Status": "ACTIVE",
+        },
+        {
+            "ISIN": "INE131A04G64",
+            "Description": "Some Sovereign Gold Bond",
+            "Issuer": "RBI",
+            "Type": "SOVEREIGN GOLD BOND",
+            "Status": "ACTIVE",
+        },
+    )
+    kept, dropped = parse_isin_csv(csv_text)
+    assert len(kept) == 3
+    assert dropped == {}
+
+
+def test_parse_isin_csv_drops_out_of_scope_types():
+    csv_text = _isin_csv(
+        {
+            "ISIN": "INE001A14A04",
+            "Description": "HDFC CP",
+            "Issuer": "HDFC LIMITED",
+            "Type": "COMMERCIAL PAPER",
+            "Status": "DELETED",
+        },
+        {
+            "ISIN": "INE001A02XYZ",
+            "Description": "Some Bank CD",
+            "Issuer": "SOME BANK",
+            "Type": "CERTIFICATE OF DEPOSIT",
+            "Status": "ACTIVE",
+        },
+        {
+            "ISIN": "INE001A05TBL",
+            "Description": "T-Bill 91D",
+            "Issuer": "GOI",
+            "Type": "TREASURY BILLS",
+            "Status": "DELETED",
+        },
+        {
+            "ISIN": "INF001S22001",
+            "Description": "Some MF Unit",
+            "Issuer": "Some AMC",
+            "Type": "MUTUAL FUND UNIT",
+            "Status": "ACTIVE",
+        },
+        {
+            "ISIN": "INE099B07001",
+            "Description": "Some PTC",
+            "Issuer": "Securitisation Trust",
+            "Type": "SECURITISED INSTRUMENT",
+            "Status": "DELETED",
+        },
+    )
+    kept, dropped = parse_isin_csv(csv_text)
+    assert kept == []
+    # Drop counts grouped by raw (pre-normalisation) type.
+    assert dropped == {
+        "COMMERCIAL PAPER": 1,
+        "CERTIFICATE OF DEPOSIT": 1,
+        "TREASURY BILLS": 1,
+        "MUTUAL FUND UNIT": 1,
+        "SECURITISED INSTRUMENT": 1,
+    }
+
+
+def test_parse_isin_csv_normalises_type_casing():
+    # captn3m0 has a handful of lowercase variants like "Debenture" or
+    # "Government Securities" mixed in with the uppercase rows. The fetcher
+    # should collapse them to canonical UPPERCASE so the type filter and
+    # downstream consumers see one form.
+    csv_text = _isin_csv(
+        {
+            "ISIN": "INE001A07XYZ",
+            "Description": "Some Debenture",
+            "Issuer": "Some Issuer",
+            "Type": "Debenture",  # lowercase variant in source
+            "Status": "ACTIVE",
+        },
+        {
+            "ISIN": "IN000125G018",
+            "Description": "GOI 6.5% 2025",
+            "Issuer": "GOI",
+            "Type": "Government Securities",  # lowercase variant
+            "Status": "ACTIVE",
+        },
+    )
+    kept, dropped = parse_isin_csv(csv_text)
+    assert len(kept) == 2
+    assert dropped == {}
+    # Both rows now share the canonical UPPERCASE form.
+    types = {row[3] for row in kept}
+    assert types == {"DEBENTURE", "GOVERNMENT SECURITIES"}
+
+
+def test_parse_isin_csv_normalises_status_casing():
+    csv_text = _isin_csv(
+        {
+            "ISIN": "INE001A01999",
+            "Description": "Some Equity",
+            "Issuer": "Some Issuer",
+            "Type": "EQUITY SHARES",
+            "Status": "Deleted",  # lowercase-y variant in source
+        }
+    )
+    kept, _ = parse_isin_csv(csv_text)
+    assert len(kept) == 1
+    assert kept[0][4] == "DELETED"
+
+
+def test_parse_isin_csv_drops_lowercase_out_of_scope_type():
+    # "Securitised Instrument" (lowercase) should canonicalise then be
+    # filtered out -- the dropped Counter should still see the raw form
+    # so the operator can spot the casing-bug source.
+    csv_text = _isin_csv(
+        {
+            "ISIN": "INE099B07999",
+            "Description": "Some PTC",
+            "Issuer": "Securitisation Trust",
+            "Type": "Securitised Instrument",
+            "Status": "Deleted",
+        }
+    )
+    kept, dropped = parse_isin_csv(csv_text)
+    assert kept == []
+    assert dropped == {"Securitised Instrument": 1}
+
+
+def test_parse_isin_csv_unknown_type_dropped_not_normalised():
+    # A type we've never seen before (and isn't in KEEP_TYPES) should be
+    # dropped without crashing. Counter records the raw type so the
+    # operator can decide whether to add it to KEEP_TYPES or _TYPE_CANONICAL.
+    csv_text = _isin_csv(
+        {
+            "ISIN": "INE001A99ZZZ",
+            "Description": "Some Future Instrument",
+            "Issuer": "Some Issuer",
+            "Type": "QUANTUM ENTANGLED BOND",  # made up
+            "Status": "ACTIVE",
+        }
+    )
+    kept, dropped = parse_isin_csv(csv_text)
+    assert kept == []
+    assert dropped == {"QUANTUM ENTANGLED BOND": 1}
+
+
+def test_keep_types_is_a_proper_subset_of_all_observed_types():
+    # Lock the KEEP_TYPES set down so future edits to the filter list
+    # surface in code review. The intent: equities + corporate bonds +
+    # govt bonds + AIF/InvIT/REIT + rights/warrants/IDR. NOT money market.
+    assert "EQUITY SHARES" in KEEP_TYPES
+    assert "DEBENTURE" in KEEP_TYPES
+    assert "PREFERENCE SHARES" in KEEP_TYPES
+    assert "SOVEREIGN GOLD BOND" in KEEP_TYPES
+    assert "ALTERNATIVE INVESTMENT FUND" in KEEP_TYPES
+    assert "INFRASTRUCTURE INVESTMENT TRUST" in KEEP_TYPES
+    assert "REAL ESTATE INVESTMENT TRUSTS" in KEEP_TYPES
+
+    assert "COMMERCIAL PAPER" not in KEEP_TYPES
+    assert "CERTIFICATE OF DEPOSIT" not in KEEP_TYPES
+    assert "TREASURY BILLS" not in KEEP_TYPES
+    assert "SECURITISED INSTRUMENT" not in KEEP_TYPES
+    assert "MUTUAL FUND UNIT" not in KEEP_TYPES
+    assert "MUTUAL FUND UNIT (TRASE)" not in KEEP_TYPES

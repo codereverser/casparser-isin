@@ -11,12 +11,16 @@ from __future__ import annotations
 import pytest
 from cptools.builder import (
     _FRANKLIN_ROW_START,
+    IsinRow,
     SchemeRow,
     build_rows_from_bse,
     build_rows_from_franklin,
+    merge_isin_rows,
     merge_rows,
+    read_baseline_isin,
     sebi_category_to_tax_type,
 )
+from cptools.fetchers.isin import KEEP_TYPES
 
 # Minimal subset of BSE master columns. We don't model the full ~30-column
 # layout because the builder only touches the columns named here; csv.DictReader
@@ -640,3 +644,167 @@ class TestBuildRowsFromBseWithSebi:
         rows, _, _ = build_rows_from_bse([csv_text], {}, {})
         assert rows[803].type == "EQUITY"
         assert rows[803].sebi_category is None
+
+
+class TestMergeIsinRows:
+    """Append-only merge for the generic isin table."""
+
+    def test_baseline_in_scope_rows_carried_forward(self):
+        baseline = {
+            "INE001A01036": IsinRow(
+                isin="INE001A01036",
+                name="HDFC Equity",
+                issuer="HDFC LIMITED",
+                type="EQUITY SHARES",
+                status="ACTIVE",
+                last_seen="2024-01-15",
+            )
+        }
+        # No live rows -> baseline preserved untouched.
+        out = merge_isin_rows(baseline, [], keep_types=KEEP_TYPES, today="2026-05-22")
+        assert len(out) == 1
+        assert out[0].last_seen == "2024-01-15"  # frozen
+
+    def test_baseline_out_of_scope_rows_dropped(self):
+        # Commercial Paper / T-Bills / etc. that existed in older baseline
+        # DBs are filtered out -- KEEP_TYPES is the canonical scope.
+        baseline = {
+            "INE001A14A04": IsinRow(
+                isin="INE001A14A04",
+                name="HDFC CP",
+                issuer="HDFC LIMITED",
+                type="COMMERCIAL PAPER",  # not in KEEP_TYPES
+                status="DELETED",
+                last_seen="2024-01-15",
+            ),
+            "INE001A01036": IsinRow(
+                isin="INE001A01036",
+                name="HDFC Equity",
+                issuer="HDFC LIMITED",
+                type="EQUITY SHARES",  # in KEEP_TYPES
+                status="ACTIVE",
+                last_seen="2024-01-15",
+            ),
+        }
+        out = merge_isin_rows(baseline, [], keep_types=KEEP_TYPES, today="2026-05-22")
+        isins = {r.isin for r in out}
+        assert isins == {"INE001A01036"}
+
+    def test_live_row_reconfirms_baseline_bumps_last_seen(self):
+        baseline = {
+            "INE001A01036": IsinRow(
+                isin="INE001A01036",
+                name="HDFC Limited EQ",
+                issuer="HDFC LIMITED",
+                type="EQUITY SHARES",
+                status="ACTIVE",
+                last_seen="2024-01-15",
+            )
+        }
+        live = [
+            ["INE001A01036", "HDFC Limited EQ", "HDFC LIMITED", "EQUITY SHARES", "ACTIVE"],
+        ]
+        out = merge_isin_rows(baseline, live, keep_types=KEEP_TYPES, today="2026-05-22")
+        assert len(out) == 1
+        assert out[0].last_seen == "2026-05-22"
+
+    def test_live_row_refreshes_baseline_metadata(self):
+        # Live source has updated name/status (e.g. company rename, scheme
+        # delisted). The merged row picks up the latest live values.
+        baseline = {
+            "INE001A01036": IsinRow(
+                isin="INE001A01036",
+                name="OLD HDFC NAME",
+                issuer="HDFC LIMITED",
+                type="EQUITY SHARES",
+                status="ACTIVE",
+                last_seen="2024-01-15",
+            )
+        }
+        live = [
+            ["INE001A01036", "HDFC NEW NAME", "HDFC LIMITED", "EQUITY SHARES", "DELETED"],
+        ]
+        out = merge_isin_rows(baseline, live, keep_types=KEEP_TYPES, today="2026-05-22")
+        assert out[0].name == "HDFC NEW NAME"
+        assert out[0].status == "DELETED"
+        assert out[0].last_seen == "2026-05-22"
+
+    def test_live_row_does_not_clobber_baseline_when_dropped(self):
+        # captn3m0 sometimes ships an empty issuer / name for a row that
+        # had one in the baseline. Don't lose the baseline data.
+        baseline = {
+            "INE001A01036": IsinRow(
+                isin="INE001A01036",
+                name="HDFC Equity",
+                issuer="HDFC LIMITED",  # baseline has issuer
+                type="EQUITY SHARES",
+                status="ACTIVE",
+                last_seen="2024-01-15",
+            )
+        }
+        # Live row has empty issuer.
+        live = [
+            ["INE001A01036", "HDFC Equity", "", "EQUITY SHARES", "ACTIVE"],
+        ]
+        out = merge_isin_rows(baseline, live, keep_types=KEEP_TYPES, today="2026-05-22")
+        assert out[0].issuer == "HDFC LIMITED"  # baseline preserved
+
+    def test_brand_new_live_row_inserted_with_today(self):
+        live = [
+            ["INE001A01999", "Brand New Co", "Brand New Co Ltd", "EQUITY SHARES", "ACTIVE"],
+        ]
+        out = merge_isin_rows({}, live, keep_types=KEEP_TYPES, today="2026-05-22")
+        assert len(out) == 1
+        assert out[0].isin == "INE001A01999"
+        assert out[0].last_seen == "2026-05-22"
+
+
+class TestReadBaselineIsin:
+    """Tolerance for baseline DBs of varying generations."""
+
+    def test_missing_db_returns_empty(self, tmp_path):
+        # Stateless container / clean checkout: no DB at the path is fine.
+        out = read_baseline_isin(tmp_path / "nonexistent.db")
+        assert out == {}
+
+    def test_missing_isin_table_returns_empty(self, tmp_path):
+        # An older DB where the isin table was never created.
+        import sqlite3 as _sqlite3
+
+        path = tmp_path / "noisin.db"
+        with _sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE scheme(id INTEGER PRIMARY KEY)")
+        assert read_baseline_isin(path) == {}
+
+    def test_missing_last_seen_column_fills_with_none(self, tmp_path):
+        # An older DB whose isin table predates the last_seen column.
+        import sqlite3 as _sqlite3
+
+        path = tmp_path / "preLS.db"
+        with _sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE isin(isin NOT NULL PRIMARY KEY, name, issuer, type, status)")
+            conn.execute(
+                "INSERT INTO isin VALUES (?, ?, ?, ?, ?)",
+                ("INE001A01036", "HDFC Equity", "HDFC LIMITED", "EQUITY SHARES", "ACTIVE"),
+            )
+        out = read_baseline_isin(path)
+        assert "INE001A01036" in out
+        assert out["INE001A01036"].last_seen is None
+
+    def test_full_schema_round_trip(self, tmp_path):
+        import sqlite3 as _sqlite3
+
+        path = tmp_path / "full.db"
+        with _sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE TABLE isin("
+                "isin NOT NULL PRIMARY KEY, name, issuer, type, status, last_seen)"
+            )
+            conn.execute(
+                "INSERT INTO isin VALUES (?, ?, ?, ?, ?, ?)",
+                ("INE001A01036", "HDFC", "HDFC LTD", "EQUITY SHARES", "ACTIVE", "2026-05-21"),
+            )
+        out = read_baseline_isin(path)
+        row = out["INE001A01036"]
+        assert row.last_seen == "2026-05-21"
+        assert row.name == "HDFC"

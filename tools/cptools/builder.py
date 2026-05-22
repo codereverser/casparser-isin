@@ -249,6 +249,132 @@ def read_baseline(db_path: Path) -> tuple[dict[int, SchemeRow], dict[str, str]]:
     return rows, amfi_map
 
 
+@dataclass(frozen=True, slots=True)
+class IsinRow:
+    """One row destined for the ``isin`` table (generic security metadata).
+
+    Used for NSDL/CDSL CAS support -- maps an equity / bond / AIF ISIN to a
+    human-readable name, the issuer, instrument type, and lifecycle status.
+    ``last_seen`` behaves the same as on :class:`SchemeRow`: ISO date of the
+    most recent live confirmation, or ``None`` for un-touched baseline rows.
+    """
+
+    isin: str
+    name: str | None
+    issuer: str | None
+    type: str
+    status: str | None
+    last_seen: str | None = None
+
+    def as_tuple(self) -> tuple:
+        return (self.isin, self.name, self.issuer, self.type, self.status, self.last_seen)
+
+
+_ISIN_BASE_COLS = ("isin", "name", "issuer", "type", "status")
+_ISIN_OPTIONAL_COLS = ("last_seen",)
+
+
+def read_baseline_isin(db_path: Path) -> dict[str, IsinRow]:
+    """Read the existing ``isin`` table to drive carry-forward.
+
+    Returns ``isin -> IsinRow``. Tolerates baseline DBs missing the table
+    entirely (returns empty) or missing the ``last_seen`` column (fills
+    with ``None``).
+    """
+    if not db_path.exists():
+        logger.warning("No baseline DB at %s; isin table will start from empty state", db_path)
+        return {}
+
+    rows: dict[str, IsinRow] = {}
+    with sqlite3.connect(db_path) as conn:
+        if "isin" not in {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }:
+            logger.warning("Baseline DB has no isin table; starting empty")
+            return {}
+
+        present = _existing_columns(conn, "isin")
+        select_cols = list(_ISIN_BASE_COLS) + [col for col in _ISIN_OPTIONAL_COLS if col in present]
+        cur = conn.execute(f"SELECT {', '.join(select_cols)} FROM isin")
+        for row in cur:
+            kw = dict(zip(select_cols, row, strict=True))
+            rows[kw["isin"]] = IsinRow(
+                isin=kw["isin"],
+                name=kw["name"],
+                issuer=kw["issuer"],
+                type=kw["type"],
+                status=kw["status"],
+                last_seen=kw.get("last_seen"),
+            )
+
+    logger.info("Baseline: %d isin rows", len(rows))
+    return rows
+
+
+def merge_isin_rows(
+    baseline: dict[str, IsinRow],
+    new_rows: list[list[str]],
+    keep_types: frozenset[str],
+    today: str | None = None,
+) -> list[IsinRow]:
+    """Merge baseline isin rows with fresh captn3m0 rows. **Append-only.**
+
+    Contract -- mirrors :func:`merge_rows` for the ``scheme`` table:
+
+    - Baseline rows whose ``type`` is in ``keep_types`` are preserved
+      unconditionally. Out-of-scope baseline types (COMMERCIAL PAPER,
+      CERTIFICATE OF DEPOSIT, TREASURY BILLS, SECURITISED INSTRUMENT,
+      MUTUAL FUND UNIT*) are filtered out -- they fall outside the
+      KEEP_TYPES scope and won't appear in any subsequent build either.
+      The very first run under this rule effectively cleans them up.
+    - A live row whose ISIN matches a kept baseline row is treated as a
+      *re-confirmation*: ``last_seen`` is bumped to ``today``, and any
+      metadata field (name / issuer / type / status) that the live source
+      provides overrides the baseline value. The baseline value is kept
+      only if the live source has dropped it (None / empty).
+    - A live row whose ISIN isn't in baseline is inserted fresh with
+      ``last_seen=today``.
+
+    ``new_rows`` items are 5-tuples of ``[isin, name, issuer, type, status]``
+    -- the shape produced by :func:`cptools.fetchers.isin.parse_isin_csv`,
+    which already applies the type filter and casing normalisation.
+    """
+    today = today or today_iso()
+    out: dict[str, IsinRow] = {}
+
+    # 1. Baseline carry-forward, filtered to keep_types.
+    for isin, row in baseline.items():
+        if row.type in keep_types:
+            out[isin] = row
+
+    # 2. Live rows. Either re-confirm a baseline row or insert as new.
+    for new_row in new_rows:
+        isin, name, issuer, type_, status = new_row
+        existing = out.get(isin)
+        if existing is not None:
+            out[isin] = replace(
+                existing,
+                # Live metadata wins where it's populated; baseline fills
+                # gaps (e.g. captn3m0 dropped an issuer string we had).
+                name=name if name else existing.name,
+                issuer=issuer if issuer else existing.issuer,
+                type=type_,  # live type already normalised + filtered
+                status=status if status else existing.status,
+                last_seen=today,
+            )
+            continue
+        out[isin] = IsinRow(
+            isin=isin,
+            name=name or None,
+            issuer=issuer or None,
+            type=type_,
+            status=status or None,
+            last_seen=today,
+        )
+
+    return list(out.values())
+
+
 def build_rows_from_bse(
     bse_csvs: list[str],
     amfi_mapping: dict[str, tuple[str, bool | None]],
@@ -446,7 +572,7 @@ def merge_rows(
       means ``last_seen=NULL`` -- a useful diagnostic for "never
       re-confirmed since the migration."
 
-    See ``tests/tools/test_invariants.py`` (A10) for the regression test
+    See ``tests/tools/test_invariants.py`` for the regression test
     that locks this contract down.
 
     ``today`` is injected for tests. In production it defaults to

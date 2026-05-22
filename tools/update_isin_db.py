@@ -28,15 +28,18 @@ from pathlib import Path
 
 from cptools.b2 import upload_isin_db_to_b2
 from cptools.builder import (
+    IsinRow,
     SchemeRow,
     build_rows_from_bse,
     build_rows_from_franklin,
+    merge_isin_rows,
     merge_rows,
     read_baseline,
+    read_baseline_isin,
 )
 from cptools.fetchers.amfi import get_amfi_isin_map
 from cptools.fetchers.bse import fetch_bse_master_data
-from cptools.fetchers.isin import get_isin_data
+from cptools.fetchers.isin import KEEP_TYPES, get_isin_data
 from cptools.settings import (
     DATA_DIR,
     ISIN_DB_PATH,
@@ -99,15 +102,10 @@ def prepare_db(conn: sqlite3.Connection, rows, nav_rows, isin_rows) -> None:
         conn.execute(
             "CREATE TABLE isin(isin NOT NULL PRIMARY KEY, name, issuer, type, status, last_seen)"
         )
-        today_iso_str = today.isoformat()
         conn.executemany(
             "INSERT INTO isin(isin, name, issuer, type, status, last_seen) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            # Every row coming through this path is a fresh captn3m0 fetch,
-            # so it's "confirmed today" by definition. Baseline carry-forward
-            # for the isin table (where un-confirmed rows keep their prior
-            # last_seen) lands in a later change.
-            ((*row, today_iso_str) if len(row) == 5 else row for row in isin_rows),
+            (r.as_tuple() if isinstance(r, IsinRow) else r for r in isin_rows),
         )
 
     # VACUUM to reclaim any free pages from the bulk inserts. Must run
@@ -163,15 +161,202 @@ def _read_db_version(path: Path) -> str:
         return row[0] if row else ""
 
 
+class RowCountGuardError(RuntimeError):
+    """Raised when a candidate DB has fewer in-scope rows than the baseline.
+
+    Indicates a feed went bad (truncated CSV, WAF interstitial, partial
+    response). The candidate is NOT promoted; the operator must investigate.
+    """
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+    return cur.fetchone() is not None
+
+
+def _count_baseline_isin_in_scope(conn: sqlite3.Connection) -> int:
+    """Count baseline isin rows whose type is in KEEP_TYPES.
+
+    Applies the same casing normalisation the fetcher does, so a baseline
+    row with type='Debenture' (lowercase legacy variant) counts the same
+    as one with 'DEBENTURE'. Without this, the first run under the new
+    filter would falsely flag those rows as "dropped."
+    """
+    from cptools.fetchers.isin import _TYPE_CANONICAL
+
+    count = 0
+    for (t,) in conn.execute("SELECT type FROM isin"):
+        canonical = _TYPE_CANONICAL.get(t, t)
+        if canonical in KEEP_TYPES:
+            count += 1
+    return count
+
+
+def _check_row_counts(baseline_path: Path, candidate_path: Path) -> None:
+    """Refuse to publish if any table's in-scope row count drops.
+
+    For ``scheme`` and ``nav20180131`` the comparison is strict monotonic
+    (append-only). For ``isin`` we count only baseline rows whose type is
+    in :data:`KEEP_TYPES` -- the one-time cleanup of out-of-scope rows on
+    the first run with the new schema must not trip the guard.
+
+    No-op when baseline doesn't exist (fresh checkout / stateless container).
+    """
+    if not baseline_path.exists():
+        logger.info("No baseline DB; skipping row-count guard")
+        return
+
+    with (
+        closing(sqlite3.connect(baseline_path)) as b,
+        closing(sqlite3.connect(candidate_path)) as c,
+    ):
+        # scheme: strict append-only
+        if _table_exists(b, "scheme"):
+            baseline_scheme = b.execute("SELECT COUNT(*) FROM scheme").fetchone()[0]
+        else:
+            baseline_scheme = 0
+        candidate_scheme = c.execute("SELECT COUNT(*) FROM scheme").fetchone()[0]
+        if candidate_scheme < baseline_scheme:
+            raise RowCountGuardError(
+                f"scheme row count dropped: baseline={baseline_scheme}, "
+                f"candidate={candidate_scheme}. Refusing to publish."
+            )
+
+        # isin: in-scope subset only (one-time cleanup of CP/CD/etc. allowed)
+        if _table_exists(b, "isin"):
+            baseline_isin_in_scope = _count_baseline_isin_in_scope(b)
+        else:
+            baseline_isin_in_scope = 0
+        candidate_isin = c.execute("SELECT COUNT(*) FROM isin").fetchone()[0]
+        if candidate_isin < baseline_isin_in_scope:
+            raise RowCountGuardError(
+                f"isin in-scope row count dropped: baseline_in_scope="
+                f"{baseline_isin_in_scope}, candidate={candidate_isin}. "
+                "Refusing to publish."
+            )
+
+        # nav20180131: static frozen reference -- never shrinks
+        if _table_exists(b, "nav20180131"):
+            baseline_nav = b.execute("SELECT COUNT(*) FROM nav20180131").fetchone()[0]
+        else:
+            baseline_nav = 0
+        candidate_nav = c.execute("SELECT COUNT(*) FROM nav20180131").fetchone()[0]
+        if candidate_nav < baseline_nav:
+            raise RowCountGuardError(
+                f"nav20180131 row count dropped: baseline={baseline_nav}, "
+                f"candidate={candidate_nav}. Refusing to publish."
+            )
+
+        logger.info(
+            "Row-count guard OK: scheme %d->%d, isin %d (in-scope baseline)->%d, nav %d->%d",
+            baseline_scheme,
+            candidate_scheme,
+            baseline_isin_in_scope,
+            candidate_isin,
+            baseline_nav,
+            candidate_nav,
+        )
+
+
+def _log_scheme_merge_stats(
+    baseline: dict,
+    bse_rows: dict,
+    franklin_rows: dict,
+    merged: list,
+) -> None:
+    """Emit per-source breakdown for the scheme merge.
+
+    The numbers should be readable at a glance:
+
+    - ``baseline_kept`` must equal ``len(baseline)`` under the append-only
+      contract. Anything else means a row was dropped -- a bug.
+    - ``bse_new`` / ``franklin_new`` count rows whose dedupe_key didn't
+      exist in the baseline (genuinely new schemes).
+    - ``bse_reconfirmed`` / ``franklin_reconfirmed`` count rows that
+      matched a baseline dedupe_key (last_seen got bumped).
+    """
+    baseline_keys = {r.dedupe_key() for r in baseline.values()}
+    bse_keys = {r.dedupe_key() for r in bse_rows.values()}
+    franklin_keys = {r.dedupe_key() for r in franklin_rows.values()}
+    merged_ids = {r.id for r in merged}
+
+    baseline_kept = sum(1 for r in baseline.values() if r.id in merged_ids)
+    baseline_dropped = len(baseline) - baseline_kept
+    bse_new = len(bse_keys - baseline_keys)
+    bse_reconfirmed = len(bse_keys & baseline_keys)
+    franklin_new = len(franklin_keys - baseline_keys - bse_keys)
+    franklin_reconfirmed = len(franklin_keys & baseline_keys)
+
+    logger.info(
+        "scheme merge: %d rows total | baseline_kept=%d bse_new=%d "
+        "bse_reconfirmed=%d franklin_new=%d franklin_reconfirmed=%d "
+        "baseline_dropped=%d",
+        len(merged),
+        baseline_kept,
+        bse_new,
+        bse_reconfirmed,
+        franklin_new,
+        franklin_reconfirmed,
+        baseline_dropped,
+    )
+    if baseline_dropped != 0:
+        # Append-only contract violation. The row-count guard should also
+        # catch this, but log at ERROR so it's visible in cron mail.
+        logger.error(
+            "Append-only contract violated: %d baseline scheme rows dropped",
+            baseline_dropped,
+        )
+
+
+def _log_isin_merge_stats(
+    baseline: dict,
+    fresh_rows: list,
+    merged: list,
+) -> None:
+    """Emit per-source breakdown for the isin merge.
+
+    Note that for the isin table, ``baseline_cleanup`` is expected to be
+    non-zero on the first run with the new schema (out-of-scope CP / CD /
+    T-Bills / Securitised / MF UNIT rows are filtered out). Subsequent
+    runs should have ``baseline_cleanup=0``.
+    """
+    baseline_in_scope_isins = {isin for isin, r in baseline.items() if r.type in KEEP_TYPES}
+    fresh_isins = {row[0] for row in fresh_rows}
+    merged_isins = {r.isin for r in merged}
+
+    baseline_kept = len(baseline_in_scope_isins & merged_isins)
+    baseline_cleanup = len(baseline) - len(baseline_in_scope_isins)
+    in_scope_dropped = len(baseline_in_scope_isins) - baseline_kept
+    live_new = len(fresh_isins - baseline_in_scope_isins)
+    live_reconfirmed = len(fresh_isins & baseline_in_scope_isins)
+
+    logger.info(
+        "isin merge: %d rows total | baseline_kept=%d live_new=%d "
+        "live_reconfirmed=%d baseline_cleanup=%d in_scope_dropped=%d",
+        len(merged),
+        baseline_kept,
+        live_new,
+        live_reconfirmed,
+        baseline_cleanup,
+        in_scope_dropped,
+    )
+    if in_scope_dropped != 0:
+        logger.error(
+            "Append-only contract violated: %d in-scope baseline isin rows dropped",
+            in_scope_dropped,
+        )
+
+
 def build_pipeline() -> sqlite3.Connection:
     """Fetch everything and return a populated in-memory connection."""
     session = get_session()
 
+    # --- scheme table -----------------------------------------------------
     baseline_rows, baseline_amfi_map = read_baseline(ISIN_DB_PATH)
 
     amfi_payload = get_amfi_isin_map(session)
     bse_csvs = fetch_bse_master_data(session)
-    isin_rows = get_isin_data(session)
+    fresh_isin_rows = get_isin_data(session)  # already filtered + normalised
 
     bse_rows, total_bse, skipped_bse = build_rows_from_bse(
         bse_csvs,
@@ -182,13 +367,22 @@ def build_pipeline() -> sqlite3.Connection:
     franklin_rows = build_rows_from_franklin(DATA_DIR / "franklin_funds.csv")
     rows = merge_rows(baseline_rows, bse_rows, franklin_rows)
     logger.info(
-        "Scheme rows: %d (bse parsed=%d skipped=%d, franklin=%d, baseline carry=%d)",
-        len(rows),
+        "BSE source: parsed=%d skipped=%d kept=%d",
         total_bse,
         skipped_bse,
-        len(franklin_rows),
-        len(baseline_rows),
+        len(bse_rows),
     )
+    _log_scheme_merge_stats(baseline_rows, bse_rows, franklin_rows, rows)
+
+    # --- isin table -------------------------------------------------------
+    # Append-only merge: baseline rows of in-scope types are preserved, live
+    # rows either re-confirm a baseline ISIN (bump last_seen + refresh
+    # metadata) or insert as new. Out-of-scope baseline types are filtered
+    # out -- equivalent to a one-time cleanup on the first run under the
+    # new scope contract.
+    baseline_isin = read_baseline_isin(ISIN_DB_PATH)
+    isin_rows = merge_isin_rows(baseline_isin, fresh_isin_rows, keep_types=KEEP_TYPES)
+    _log_isin_merge_stats(baseline_isin, fresh_isin_rows, isin_rows)
 
     nav_rows = list(amfi_payload["navs"].items())
     return _build_in_memory(rows, nav_rows, isin_rows)
@@ -201,6 +395,10 @@ def run(*, no_upload: bool = False) -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir) / "isin.db.candidate"
         _backup_to_file(mem_conn, tmp_path)
+
+        # Row-count guard runs BEFORE the hash diff so a "no change" run
+        # that silently lost rows still aborts loudly.
+        _check_row_counts(ISIN_DB_PATH, tmp_path)
 
         new_hash = _hash_db_content(tmp_path)
         old_hash = _hash_db_content(ISIN_DB_PATH) if ISIN_DB_PATH.exists() else None
