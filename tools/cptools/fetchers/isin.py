@@ -2,33 +2,47 @@
 
 This feeds the ``isin`` table consumed by NSDL CAS support in casparser.
 
-Two transformations are applied to every row at the fetcher boundary:
+Upstream format
+---------------
+The upstream project publishes a SQLite database as a versioned GitHub
+release asset. We discover the latest release via the GitHub API, stream
+the asset to a temporary file, and read the rows we care about with a
+plain ``SELECT``.
+
+The upstream ``isin`` table schema (subset we consume)::
+
+    isin               TEXT PRIMARY KEY
+    issuer_name        TEXT
+    description        TEXT
+    security_type_name TEXT
+    status             TEXT
+
+Transformations applied at the fetcher boundary:
 
 1. **Casing normalisation** -- the upstream source has a few rows whose
-   ``Type`` / ``Status`` columns differ only by case (e.g. ``Debenture`` vs
-   ``DEBENTURE``, ``Deleted`` vs ``DELETED``). We collapse them to a single
-   canonical form so downstream consumers don't have to worry about
-   duplicates that are really just data-quality bugs.
-2. **Type filter** -- the source contains ~290k rows spanning instrument
-   types that NSDL/CDSL CAS files never reference (commercial paper,
-   treasury bills, certificate of deposit, securitised instruments). They
-   exist in the upstream registry but are institutional-only -- not in a
-   retail demat statement. The ``KEEP_TYPES`` set scopes us to instruments
-   that actually appear in CAS files.
+   ``security_type_name`` / ``status`` differ only by case (``Debenture``
+   vs ``DEBENTURE``, ``Deleted`` vs ``DELETED``). We collapse them to a
+   single canonical form.
+2. **Type filter** -- only instrument types that *can* appear in retail
+   NSDL / CDSL CAS files (see :data:`KEEP_TYPES`).
 """
 
 from __future__ import annotations
 
-import csv
-import io
+import os
+import sqlite3
+import tempfile
 from collections import Counter
+from pathlib import Path
 
 import requests
 
-from ..constants import ISIN_URL
+from ..constants import ISIN_ASSET_NAME, ISIN_GITHUB_LATEST_RELEASE_API
 from ..settings import logger
 
-_MIN_EXPECTED_ROWS = 10_000  # the live file ships >200k rows
+# The live upstream DB ships > 380k rows. Anything dramatically below
+# this is a sign we got a truncated download or a malformed file.
+_MIN_EXPECTED_ROWS = 10_000
 
 # Casing-bug duplicates observed in the source feed. Keys are seen-in-the-wild;
 # values are the canonical form we want to store.
@@ -76,69 +90,153 @@ KEEP_TYPES: frozenset[str] = frozenset(
 )
 
 
-def _canonicalise(row: dict[str, str]) -> list[str] | None:
+def _canonicalise(
+    isin: str,
+    description: str | None,
+    issuer_name: str | None,
+    security_type_name: str | None,
+    status: str | None,
+) -> list[str] | None:
     """Normalise casing and apply the type filter.
 
     Returns ``[isin, name, issuer, type, status]`` for in-scope rows, or
-    ``None`` for rows whose type isn't in ``KEEP_TYPES``.
+    ``None`` for rows whose type isn't in :data:`KEEP_TYPES`.
     """
-    raw_type = row["Type"]
-    raw_status = row["Status"]
+    raw_type = security_type_name or ""
+    raw_status = status or ""
     type_ = _TYPE_CANONICAL.get(raw_type, raw_type)
-    status = _STATUS_CANONICAL.get(raw_status, raw_status)
+    status_ = _STATUS_CANONICAL.get(raw_status, raw_status)
     if type_ not in KEEP_TYPES:
         return None
-    return [row["ISIN"], row["Description"], row["Issuer"], type_, status]
+    return [isin, description or "", issuer_name or "", type_, status_]
 
 
-def parse_isin_csv(text: str) -> tuple[list[list[str]], Counter]:
-    """Parse the captn3m0 CSV body. Pure function -- no network.
+def parse_isin_db(db_path: Path) -> tuple[list[list[str]], Counter]:
+    """Read an upstream captn3m0 isin.db and return our filtered row set.
 
     Returns ``(kept_rows, dropped_by_type)`` so callers can log the drop
-    distribution. Tests use this entry point directly.
+    distribution. Tests use this entry point directly with a fixture DB.
     """
     kept: list[list[str]] = []
     dropped: Counter[str] = Counter()
-    with io.StringIO(text) as fp:
-        reader = csv.DictReader(fp)
-        for row in reader:
-            transformed = _canonicalise(row)
+    # Open read-only via URI -- prevents any accidental write back to the
+    # downloaded asset, and lets us drop the temp file as soon as the
+    # iteration completes.
+    uri = f"file:{db_path}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as conn:
+        cur = conn.execute(
+            "SELECT isin, description, issuer_name, security_type_name, status FROM isin"
+        )
+        for isin, description, issuer_name, security_type_name, status in cur:
+            transformed = _canonicalise(isin, description, issuer_name, security_type_name, status)
             if transformed is None:
-                # Track the original (pre-normalisation) type so the
-                # operator can see which feeds are noisiest.
-                dropped[row["Type"]] += 1
+                dropped[security_type_name or "<empty>"] += 1
                 continue
             kept.append(transformed)
     return kept, dropped
+
+
+def _find_latest_release_asset(session: requests.Session) -> tuple[str, str]:
+    """Hit the GitHub API to discover the latest release's isin.db asset.
+
+    Returns ``(tag_name, asset_download_url)``. Raises ``ValueError`` if
+    no asset named :data:`ISIN_ASSET_NAME` is found in the latest release.
+    """
+    response = session.get(
+        ISIN_GITHUB_LATEST_RELEASE_API,
+        timeout=30,
+        headers={"Accept": "application/vnd.github+json"},
+    )
+    if response.status_code != 200:
+        raise ValueError(
+            f"GitHub release API returned {response.status_code} for captn3m0/india-isin-data"
+        )
+    data = response.json()
+    tag = data.get("tag_name") or "<unknown>"
+    for asset in data.get("assets", []):
+        if asset.get("name") == ISIN_ASSET_NAME:
+            url = asset.get("browser_download_url")
+            if url:
+                return tag, url
+    raise ValueError(f"No asset named {ISIN_ASSET_NAME!r} found in captn3m0 release {tag}")
+
+
+def _stream_download(session: requests.Session, url: str, dest: Path) -> int:
+    """Stream a binary asset to ``dest``. Returns the byte count.
+
+    If ``session`` is a requests-cache ``CachedSession``, we bypass the
+    HTTP cache for this one request -- a 130+ MB binary doesn't belong
+    in the cache SQLite backend, and we always want a fresh asset for a
+    release build.
+    """
+
+    def _do_get():
+        return session.get(url, stream=True, timeout=300)
+
+    # `cache_disabled()` is only on requests-cache CachedSession; a plain
+    # requests.Session lacks it. Probe and branch.
+    cache_disabled = getattr(session, "cache_disabled", None)
+    if callable(cache_disabled):
+        with cache_disabled():
+            response = _do_get()
+    else:
+        response = _do_get()
+
+    if response.status_code != 200:
+        raise ValueError(f"captn3m0 release asset returned {response.status_code} for {url}")
+    total = 0
+    with open(dest, "wb") as fp:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if not chunk:
+                continue
+            fp.write(chunk)
+            total += len(chunk)
+    return total
 
 
 def get_isin_data(session: requests.Session) -> list[list[str]]:
     """Return rows of ``[isin, name, issuer, type, status]``.
 
     Out-of-scope instrument types (commercial paper, T-bills, etc.) are
-    dropped here -- see :data:`KEEP_TYPES`.
+    dropped here -- see :data:`KEEP_TYPES`. The upstream SQLite asset is
+    downloaded to a temp file, queried, and then deleted.
     """
-    response = session.get(ISIN_URL, timeout=60)
-    if response.status_code != 200:
-        raise ValueError(f"Invalid response while fetching ISIN data :: {response.status_code}")
-    if getattr(response, "from_cache", False):
-        logger.debug("Loaded ISIN data from cache")
+    tag, asset_url = _find_latest_release_asset(session)
+    logger.info("captn3m0 latest release: %s (%s)", tag, asset_url)
 
-    kept, dropped = parse_isin_csv(response.text)
+    # Use a temp file in the system temp dir so the 130 MB download doesn't
+    # land in the repo or in the HTTP cache.
+    fd, tmp_name = tempfile.mkstemp(prefix="captn3m0-", suffix=".db")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        bytes_written = _stream_download(session, asset_url, tmp_path)
+        logger.info(
+            "captn3m0 release asset downloaded: %d bytes (%.1f MB)",
+            bytes_written,
+            bytes_written / (1024 * 1024),
+        )
+        kept, dropped = parse_isin_db(tmp_path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
 
     total = len(kept) + sum(dropped.values())
     if total < _MIN_EXPECTED_ROWS:
         raise ValueError(
-            f"ISIN feed returned only {total} rows (expected >={_MIN_EXPECTED_ROWS}); "
+            f"captn3m0 returned only {total} rows (expected >={_MIN_EXPECTED_ROWS}); "
             "refusing to proceed"
         )
 
     logger.info(
-        "ISIN: %d rows kept, %d dropped (out of %d total)",
+        "captn3m0: %d rows kept, %d dropped (out of %d total) from release %s",
         len(kept),
         sum(dropped.values()),
         total,
+        tag,
     )
     for type_, count in dropped.most_common(5):
-        logger.debug("ISIN dropped %d rows of type %r", count, type_)
+        logger.debug("captn3m0 dropped %d rows of type %r", count, type_)
     return kept

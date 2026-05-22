@@ -6,10 +6,11 @@ the orchestrator level.
 
 from __future__ import annotations
 
+import sqlite3 as _sqlite3
 import textwrap
 
 from cptools.fetchers.amfi import parse_2018_nav_file, parse_amfi_nav_text
-from cptools.fetchers.isin import KEEP_TYPES, parse_isin_csv
+from cptools.fetchers.isin import KEEP_TYPES, parse_isin_db
 
 
 def test_parse_amfi_nav_text_extracts_isin_and_reinvest_flag():
@@ -166,99 +167,114 @@ def test_parse_2018_nav_file(tmp_path):
 
 
 # -----------------------------------------------------------------------------
-# captn3m0 ISIN CSV: type filter + casing normalisation
+# captn3m0 isin.db: type filter + casing normalisation
 # -----------------------------------------------------------------------------
+#
+# Upstream switched from a CSV-in-main-branch to a SQLite database
+# published as a versioned GitHub release asset. Fixture DBs below mirror
+# that schema and use the same upstream column names.
 
 
-def _isin_csv(*rows: dict[str, str]) -> str:
-    """Render rows as a CSV matching the captn3m0/india-isin-data format."""
-    header = "ISIN,Description,Issuer,Type,Status"
-    lines = [header]
-    for row in rows:
-        lines.append(
-            ",".join(
-                [
-                    row["ISIN"],
-                    row["Description"],
-                    row["Issuer"],
-                    row["Type"],
-                    row["Status"],
-                ]
-            )
+def _make_isin_db(tmp_path, rows):
+    """Build a fixture isin.db matching the captn3m0 schema (subset).
+
+    ``rows`` is an iterable of dicts with keys: isin, description,
+    issuer_name, security_type_name, status.
+    """
+    path = tmp_path / "captn3m0_fixture.db"
+    with _sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE isin ("
+            "  isin TEXT PRIMARY KEY,"
+            "  issuer_name TEXT,"
+            "  description TEXT,"
+            "  security_type_name TEXT,"
+            "  status TEXT"
+            ")"
         )
-    return "\n".join(lines)
+        conn.executemany(
+            "INSERT INTO isin (isin, issuer_name, description, security_type_name, status) "
+            "VALUES (:isin, :issuer_name, :description, :security_type_name, :status)",
+            rows,
+        )
+    return path
 
 
-def test_parse_isin_csv_keeps_in_scope_types():
-    csv_text = _isin_csv(
-        {
-            "ISIN": "INE001A01036",
-            "Description": "HDFC LIMITED EQ FV RS 2",
-            "Issuer": "HDFC LIMITED",
-            "Type": "EQUITY SHARES",
-            "Status": "ACTIVE",
-        },
-        {
-            "ISIN": "INE001A07Z47",
-            "Description": "HDFC NCD",
-            "Issuer": "HDFC LIMITED",
-            "Type": "DEBENTURE",
-            "Status": "ACTIVE",
-        },
-        {
-            "ISIN": "INE131A04G64",
-            "Description": "Some Sovereign Gold Bond",
-            "Issuer": "RBI",
-            "Type": "SOVEREIGN GOLD BOND",
-            "Status": "ACTIVE",
-        },
+def test_parse_isin_db_keeps_in_scope_types(tmp_path):
+    db = _make_isin_db(
+        tmp_path,
+        [
+            {
+                "isin": "INE001A01036",
+                "description": "HDFC LIMITED EQ FV RS 2",
+                "issuer_name": "HDFC LIMITED",
+                "security_type_name": "EQUITY SHARES",
+                "status": "ACTIVE",
+            },
+            {
+                "isin": "INE001A07Z47",
+                "description": "HDFC NCD",
+                "issuer_name": "HDFC LIMITED",
+                "security_type_name": "DEBENTURE",
+                "status": "ACTIVE",
+            },
+            {
+                "isin": "INE131A04G64",
+                "description": "Some Sovereign Gold Bond",
+                "issuer_name": "RBI",
+                "security_type_name": "SOVEREIGN GOLD BOND",
+                "status": "ACTIVE",
+            },
+        ],
     )
-    kept, dropped = parse_isin_csv(csv_text)
+    kept, dropped = parse_isin_db(db)
     assert len(kept) == 3
     assert dropped == {}
 
 
-def test_parse_isin_csv_drops_out_of_scope_types():
-    csv_text = _isin_csv(
-        {
-            "ISIN": "INE001A14A04",
-            "Description": "HDFC CP",
-            "Issuer": "HDFC LIMITED",
-            "Type": "COMMERCIAL PAPER",
-            "Status": "DELETED",
-        },
-        {
-            "ISIN": "INE001A02XYZ",
-            "Description": "Some Bank CD",
-            "Issuer": "SOME BANK",
-            "Type": "CERTIFICATE OF DEPOSIT",
-            "Status": "ACTIVE",
-        },
-        {
-            "ISIN": "INE001A05TBL",
-            "Description": "T-Bill 91D",
-            "Issuer": "GOI",
-            "Type": "TREASURY BILLS",
-            "Status": "DELETED",
-        },
-        {
-            "ISIN": "INF001S22001",
-            "Description": "Some MF Unit",
-            "Issuer": "Some AMC",
-            "Type": "MUTUAL FUND UNIT",
-            "Status": "ACTIVE",
-        },
-        {
-            "ISIN": "INE099B07001",
-            "Description": "Some PTC",
-            "Issuer": "Securitisation Trust",
-            "Type": "SECURITISED INSTRUMENT",
-            "Status": "DELETED",
-        },
+def test_parse_isin_db_drops_out_of_scope_types(tmp_path):
+    db = _make_isin_db(
+        tmp_path,
+        [
+            {
+                "isin": "INE001A14A04",
+                "description": "HDFC CP",
+                "issuer_name": "HDFC LIMITED",
+                "security_type_name": "COMMERCIAL PAPER",
+                "status": "DELETED",
+            },
+            {
+                "isin": "INE001A02XYZ",
+                "description": "Some Bank CD",
+                "issuer_name": "SOME BANK",
+                "security_type_name": "CERTIFICATE OF DEPOSIT",
+                "status": "ACTIVE",
+            },
+            {
+                "isin": "INE001A05TBL",
+                "description": "T-Bill 91D",
+                "issuer_name": "GOI",
+                "security_type_name": "TREASURY BILLS",
+                "status": "DELETED",
+            },
+            {
+                "isin": "INF001S22001",
+                "description": "Some MF Unit",
+                "issuer_name": "Some AMC",
+                "security_type_name": "MUTUAL FUND UNIT",
+                "status": "ACTIVE",
+            },
+            {
+                "isin": "INE099B07001",
+                "description": "Some PTC",
+                "issuer_name": "Securitisation Trust",
+                "security_type_name": "SECURITISED INSTRUMENT",
+                "status": "DELETED",
+            },
+        ],
     )
-    kept, dropped = parse_isin_csv(csv_text)
+    kept, dropped = parse_isin_db(db)
     assert kept == []
-    # Drop counts grouped by raw (pre-normalisation) type.
     assert dropped == {
         "COMMERCIAL PAPER": 1,
         "CERTIFICATE OF DEPOSIT": 1,
@@ -268,84 +284,120 @@ def test_parse_isin_csv_drops_out_of_scope_types():
     }
 
 
-def test_parse_isin_csv_normalises_type_casing():
-    # captn3m0 has a handful of lowercase variants like "Debenture" or
-    # "Government Securities" mixed in with the uppercase rows. The fetcher
-    # should collapse them to canonical UPPERCASE so the type filter and
-    # downstream consumers see one form.
-    csv_text = _isin_csv(
-        {
-            "ISIN": "INE001A07XYZ",
-            "Description": "Some Debenture",
-            "Issuer": "Some Issuer",
-            "Type": "Debenture",  # lowercase variant in source
-            "Status": "ACTIVE",
-        },
-        {
-            "ISIN": "IN000125G018",
-            "Description": "GOI 6.5% 2025",
-            "Issuer": "GOI",
-            "Type": "Government Securities",  # lowercase variant
-            "Status": "ACTIVE",
-        },
+def test_parse_isin_db_normalises_type_casing(tmp_path):
+    # The upstream has a handful of lowercase variants ("Debenture",
+    # "Government Securities") mixed in with the uppercase rows. The
+    # fetcher should collapse them to canonical UPPERCASE so the type
+    # filter and downstream consumers see one form.
+    db = _make_isin_db(
+        tmp_path,
+        [
+            {
+                "isin": "INE001A07XYZ",
+                "description": "Some Debenture",
+                "issuer_name": "Some Issuer",
+                "security_type_name": "Debenture",  # lowercase variant
+                "status": "ACTIVE",
+            },
+            {
+                "isin": "IN000125G018",
+                "description": "GOI 6.5% 2025",
+                "issuer_name": "GOI",
+                "security_type_name": "Government Securities",  # lowercase
+                "status": "ACTIVE",
+            },
+        ],
     )
-    kept, dropped = parse_isin_csv(csv_text)
+    kept, dropped = parse_isin_db(db)
     assert len(kept) == 2
     assert dropped == {}
-    # Both rows now share the canonical UPPERCASE form.
     types = {row[3] for row in kept}
     assert types == {"DEBENTURE", "GOVERNMENT SECURITIES"}
 
 
-def test_parse_isin_csv_normalises_status_casing():
-    csv_text = _isin_csv(
-        {
-            "ISIN": "INE001A01999",
-            "Description": "Some Equity",
-            "Issuer": "Some Issuer",
-            "Type": "EQUITY SHARES",
-            "Status": "Deleted",  # lowercase-y variant in source
-        }
+def test_parse_isin_db_normalises_status_casing(tmp_path):
+    db = _make_isin_db(
+        tmp_path,
+        [
+            {
+                "isin": "INE001A01999",
+                "description": "Some Equity",
+                "issuer_name": "Some Issuer",
+                "security_type_name": "EQUITY SHARES",
+                "status": "Deleted",  # lowercase-y variant
+            }
+        ],
     )
-    kept, _ = parse_isin_csv(csv_text)
+    kept, _ = parse_isin_db(db)
     assert len(kept) == 1
     assert kept[0][4] == "DELETED"
 
 
-def test_parse_isin_csv_drops_lowercase_out_of_scope_type():
-    # "Securitised Instrument" (lowercase) should canonicalise then be
-    # filtered out -- the dropped Counter should still see the raw form
-    # so the operator can spot the casing-bug source.
-    csv_text = _isin_csv(
-        {
-            "ISIN": "INE099B07999",
-            "Description": "Some PTC",
-            "Issuer": "Securitisation Trust",
-            "Type": "Securitised Instrument",
-            "Status": "Deleted",
-        }
+def test_parse_isin_db_drops_lowercase_out_of_scope_type(tmp_path):
+    # "Securitised Instrument" (lowercase) canonicalises then is filtered
+    # out. The dropped Counter records the raw form so the operator can
+    # spot the casing-bug source.
+    db = _make_isin_db(
+        tmp_path,
+        [
+            {
+                "isin": "INE099B07999",
+                "description": "Some PTC",
+                "issuer_name": "Securitisation Trust",
+                "security_type_name": "Securitised Instrument",
+                "status": "Deleted",
+            }
+        ],
     )
-    kept, dropped = parse_isin_csv(csv_text)
+    kept, dropped = parse_isin_db(db)
     assert kept == []
     assert dropped == {"Securitised Instrument": 1}
 
 
-def test_parse_isin_csv_unknown_type_dropped_not_normalised():
-    # A type we've never seen before (and isn't in KEEP_TYPES) should be
-    # dropped without crashing. Counter records the raw type so the
-    # operator can decide whether to add it to KEEP_TYPES or _TYPE_CANONICAL.
-    csv_text = _isin_csv(
-        {
-            "ISIN": "INE001A99ZZZ",
-            "Description": "Some Future Instrument",
-            "Issuer": "Some Issuer",
-            "Type": "QUANTUM ENTANGLED BOND",  # made up
-            "Status": "ACTIVE",
-        }
+def test_parse_isin_db_unknown_type_dropped_not_normalised(tmp_path):
+    db = _make_isin_db(
+        tmp_path,
+        [
+            {
+                "isin": "INE001A99ZZZ",
+                "description": "Some Future Instrument",
+                "issuer_name": "Some Issuer",
+                "security_type_name": "QUANTUM ENTANGLED BOND",  # made up
+                "status": "ACTIVE",
+            }
+        ],
     )
-    kept, dropped = parse_isin_csv(csv_text)
+    kept, dropped = parse_isin_db(db)
     assert kept == []
     assert dropped == {"QUANTUM ENTANGLED BOND": 1}
+
+
+def test_parse_isin_db_empty_type_dropped_as_empty_sentinel(tmp_path):
+    # Pending / placeholder rows in the upstream have an empty
+    # security_type_name. They should be filtered out and tracked under
+    # a clear "<empty>" sentinel so the drop counter is interpretable.
+    db = _make_isin_db(
+        tmp_path,
+        [
+            {
+                "isin": "INF00XX30019",
+                "description": "ITI MUTUAL FUND DIVINITI EQ LNGSHRTFD",
+                "issuer_name": "ITI MUTUAL FUND",
+                "security_type_name": "",
+                "status": "ACTIVE",
+            },
+            {
+                "isin": "INF00XX30027",
+                "description": "Some other pending row",
+                "issuer_name": "Some AMC",
+                "security_type_name": None,
+                "status": "ACTIVE",
+            },
+        ],
+    )
+    kept, dropped = parse_isin_db(db)
+    assert kept == []
+    assert dropped == {"<empty>": 2}
 
 
 def test_keep_types_is_a_proper_subset_of_all_observed_types():
