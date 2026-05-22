@@ -15,6 +15,7 @@ from cptools.builder import (
     build_rows_from_bse,
     build_rows_from_franklin,
     merge_rows,
+    sebi_category_to_tax_type,
 )
 
 # Minimal subset of BSE master columns. We don't model the full ~30-column
@@ -318,8 +319,324 @@ def test_merge_rows_keeps_baseline_when_bse_drops_it():
             rta="CAMS",
             rta_code="RETIRED",
             amc_code="99",
+            last_seen="2024-01-15",  # last live confirmation
         )
     }
-    merged = merge_rows(baseline, {}, {})
+    merged = merge_rows(baseline, {}, {}, today="2026-05-22")
     assert len(merged) == 1
     assert merged[0].isin == "INF000000099"
+    # No live source touched this row, so last_seen MUST stay frozen at
+    # whatever the baseline DB had.
+    assert merged[0].last_seen == "2024-01-15"
+
+
+class TestMergeRowsLastSeen:
+    """Live-source confirmation bumps last_seen; baseline-only rows freeze."""
+
+    def test_baseline_only_row_freezes_last_seen(self):
+        baseline = {
+            1: SchemeRow(
+                id=1,
+                name="Frozen Fund",
+                isin="INF000FROZEN1",
+                amfi_code="100",
+                type="EQUITY",
+                rta="CAMS",
+                rta_code="FRZ",
+                amc_code="01",
+                last_seen=None,  # never confirmed yet
+            )
+        }
+        merged = merge_rows(baseline, {}, {}, today="2026-05-22")
+        # First run with new schema: no live source covers this ISIN.
+        # last_seen MUST remain NULL -- "never re-confirmed since migration".
+        assert merged[0].last_seen is None
+
+    def test_baseline_row_reconfirmed_by_bse_bumps_last_seen(self):
+        baseline = {
+            1: SchemeRow(
+                id=1,
+                name="Active Fund",
+                isin="INF000ACTIVE1",
+                amfi_code="200",
+                type="EQUITY",
+                rta="CAMS",
+                rta_code="ACT",
+                amc_code="02",
+                last_seen=None,
+            )
+        }
+        # BSE delivers a row with the same dedupe_key (re-confirmation).
+        bse = {
+            500: SchemeRow(
+                id=500,
+                name="Active Fund",
+                isin="INF000ACTIVE1",
+                amfi_code="200",
+                type="EQUITY",
+                rta="CAMS",
+                rta_code="ACT",
+                amc_code="02",
+                last_seen="2026-05-22",  # arbitrary; merge sets its own
+            )
+        }
+        merged = merge_rows(baseline, bse, {}, today="2026-05-22")
+        # One row, kept under the baseline id, with last_seen bumped to today.
+        assert len(merged) == 1
+        assert merged[0].id == 1  # baseline id preserved (not BSE's 500)
+        assert merged[0].last_seen == "2026-05-22"
+
+    def test_new_bse_row_stamped_with_today(self):
+        # Brand-new scheme that wasn't in baseline. last_seen=today.
+        bse = {
+            500: SchemeRow(
+                id=500,
+                name="New Fund",
+                isin="INF000NEW0001",
+                amfi_code="300",
+                type="EQUITY",
+                rta="CAMS",
+                rta_code="NEW",
+                amc_code="03",
+                last_seen=None,
+            )
+        }
+        merged = merge_rows({}, bse, {}, today="2026-05-22")
+        assert len(merged) == 1
+        assert merged[0].last_seen == "2026-05-22"
+
+    def test_reconfirmation_inherits_sebi_category_when_baseline_missing(self):
+        # Baseline row has no sebi_category (older schema). BSE row arrives
+        # with one from AMFI. After merge, the kept row should pick up the
+        # new category without losing its baseline id.
+        baseline = {
+            1: SchemeRow(
+                id=1,
+                name="Reclassified Fund",
+                isin="INF000RECLAS1",
+                amfi_code="400",
+                type="EQUITY",
+                rta="CAMS",
+                rta_code="RC",
+                amc_code="04",
+                sebi_category=None,
+                last_seen=None,
+            )
+        }
+        bse = {
+            500: SchemeRow(
+                id=500,
+                name="Reclassified Fund",
+                isin="INF000RECLAS1",
+                amfi_code="400",
+                type="EQUITY",
+                rta="CAMS",
+                rta_code="RC",
+                amc_code="04",
+                sebi_category="Equity Scheme - Large Cap Fund",  # newly available
+                last_seen=None,
+            )
+        }
+        merged = merge_rows(baseline, bse, {}, today="2026-05-22")
+        assert len(merged) == 1
+        assert merged[0].id == 1
+        assert merged[0].sebi_category == "Equity Scheme - Large Cap Fund"
+        assert merged[0].last_seen == "2026-05-22"
+
+    def test_reconfirmation_preserves_existing_sebi_category(self):
+        # Baseline ALREADY has a sebi_category (e.g., from yesterday's run).
+        # Even if BSE row has a different/None category, baseline wins for
+        # this field -- AMFI feed wobble shouldn't flip a categorised row
+        # back to NULL.
+        baseline = {
+            1: SchemeRow(
+                id=1,
+                name="Stable Fund",
+                isin="INF000STABLE1",
+                amfi_code="500",
+                type="EQUITY",
+                rta="CAMS",
+                rta_code="ST",
+                amc_code="05",
+                sebi_category="Equity Scheme - Large Cap Fund",  # from prior run
+                last_seen="2026-05-21",
+            )
+        }
+        bse = {
+            500: SchemeRow(
+                id=500,
+                name="Stable Fund",
+                isin="INF000STABLE1",
+                amfi_code="500",
+                type="EQUITY",
+                rta="CAMS",
+                rta_code="ST",
+                amc_code="05",
+                sebi_category=None,  # AMFI didn't cover this ISIN today
+                last_seen=None,
+            )
+        }
+        merged = merge_rows(baseline, bse, {}, today="2026-05-22")
+        assert merged[0].sebi_category == "Equity Scheme - Large Cap Fund"
+        assert merged[0].last_seen == "2026-05-22"
+
+
+class TestSebiCategoryToTaxType:
+    """Tax-type derivation from AMFI section-header SEBI category strings."""
+
+    @pytest.mark.parametrize(
+        "category,expected",
+        [
+            # Equity family -> EQUITY via prefix match
+            ("Equity Scheme - Large Cap Fund", "EQUITY"),
+            ("Equity Scheme - Mid Cap Fund", "EQUITY"),
+            ("Equity Scheme - Small Cap Fund", "EQUITY"),
+            ("Equity Scheme - ELSS", "EQUITY"),
+            ("Equity Scheme - Sectoral/ Thematic", "EQUITY"),
+            ("Equity Scheme - Flexi Cap Fund", "EQUITY"),
+            ("Equity Scheme", "EQUITY"),  # close-ended bare label
+            # Debt family -> DEBT
+            ("Debt Scheme - Banking and PSU Fund", "DEBT"),
+            ("Debt Scheme - Liquid Fund", "DEBT"),
+            ("Debt Scheme - Overnight Fund", "DEBT"),
+            ("Debt Scheme - Gilt Fund", "DEBT"),
+            ("Debt Scheme", "DEBT"),  # close-ended bare label
+            # Hybrid: per sub-category
+            ("Hybrid Scheme - Aggressive Hybrid Fund", "EQUITY"),
+            ("Hybrid Scheme - Arbitrage Fund", "EQUITY"),
+            ("Hybrid Scheme - Balanced Hybrid Fund", "DEBT"),
+            ("Hybrid Scheme - Conservative Hybrid Fund", "DEBT"),
+            ("Hybrid Scheme - Dynamic Asset Allocation or Balanced Advantage", "EQUITY"),
+            ("Hybrid Scheme - Equity Savings", "EQUITY"),
+            ("Hybrid Scheme - Multi Asset Allocation", "EQUITY"),
+            # Solution Oriented family -> EQUITY via prefix match
+            ("Solution Oriented Scheme - Retirement Fund", "EQUITY"),
+            ("Solution Oriented Scheme - Children's Fund", "EQUITY"),
+            # Other Scheme: per sub-category
+            ("Other Scheme - FoF Domestic", "EQUITY"),
+            ("Other Scheme - FoF Overseas", "DEBT"),
+            ("Other Scheme - Gold ETF", "DEBT"),
+            ("Other Scheme - Index Funds", "EQUITY"),
+            ("Other Scheme - Other ETFs", "EQUITY"),
+            ("Other Scheme - Other  ETFs", "EQUITY"),  # double-space variant in feed
+            # Legacy (pre-2018) bare labels
+            ("Income", "DEBT"),
+            ("Growth", "EQUITY"),
+            ("Gilt", "DEBT"),
+            ("ELSS", "EQUITY"),
+        ],
+    )
+    def test_known_categories_map_correctly(self, category, expected):
+        assert sebi_category_to_tax_type(category) == expected
+
+    def test_none_input_returns_none(self):
+        assert sebi_category_to_tax_type(None) is None
+
+    def test_unknown_category_returns_none(self):
+        # A category AMFI starts publishing tomorrow that we don't yet handle
+        # should return None so the caller falls back to BSE-derived type.
+        # Critically: it must NOT raise.
+        assert sebi_category_to_tax_type("Cryptocurrency Scheme - Bitcoin Fund") is None
+        assert sebi_category_to_tax_type("Some Other New Category") is None
+
+
+class TestBuildRowsFromBseWithSebi:
+    """SEBI category overrides BSE-derived type when both are present."""
+
+    def test_sebi_equity_overrides_bse_debt(self, caplog):
+        # BSE labels something "debt" but AMFI section header says it's an
+        # Equity Scheme. AMFI wins because SEBI categorisation is the
+        # authoritative source for tax classification.
+        csv_text = _bse_csv(
+            {
+                "Unique No": "800",
+                "Scheme Code": "MIS-A",
+                "AMC Scheme Code": "1",
+                "ISIN": "INF000MIS001",
+                "AMC Code": "Anything_MF",
+                "Scheme Type": "Debt",  # BSE says debt
+                "Scheme Name": "Misclassified Fund",
+                "RTA Agent Code": "CAMS",
+                "Channel Partner Code": "MIS",
+            }
+        )
+        rows, _, _ = build_rows_from_bse(
+            [csv_text],
+            amfi_mapping={},
+            fallback_amfi_map={},
+            sebi_categories={"INF000MIS001": "Equity Scheme - Mid Cap Fund"},
+        )
+        assert rows[800].type == "EQUITY"
+        assert rows[800].sebi_category == "Equity Scheme - Mid Cap Fund"
+
+    def test_sebi_unknown_falls_back_to_bse(self):
+        # AMFI gave us a category string we don't recognise -- builder must
+        # not crash, must fall back to BSE-derived type, must still record
+        # the raw SEBI category so we can study it later.
+        csv_text = _bse_csv(
+            {
+                "Unique No": "801",
+                "Scheme Code": "UNK-A",
+                "AMC Scheme Code": "1",
+                "ISIN": "INF000UNK001",
+                "AMC Code": "Anything_MF",
+                "Scheme Type": "Equity",
+                "Scheme Name": "Future Asset Class Fund",
+                "RTA Agent Code": "CAMS",
+                "Channel Partner Code": "UNK",
+            }
+        )
+        rows, _, _ = build_rows_from_bse(
+            [csv_text],
+            amfi_mapping={},
+            fallback_amfi_map={},
+            sebi_categories={"INF000UNK001": "Quantum Entangled Scheme - Mystery"},
+        )
+        assert rows[801].type == "EQUITY"  # fell back to BSE
+        # We still preserve the raw category so future iterations can extend the map.
+        assert rows[801].sebi_category == "Quantum Entangled Scheme - Mystery"
+
+    def test_no_sebi_category_keeps_bse_type(self):
+        # When AMFI has no entry for the ISIN (e.g., retired scheme not in
+        # the live feed), the BSE-derived type is used and sebi_category
+        # stays None -- same behaviour as before SEBI integration.
+        csv_text = _bse_csv(
+            {
+                "Unique No": "802",
+                "Scheme Code": "OLD-A",
+                "AMC Scheme Code": "1",
+                "ISIN": "INF000OLD001",
+                "AMC Code": "Anything_MF",
+                "Scheme Type": "Equity",
+                "Scheme Name": "Old Fund",
+                "RTA Agent Code": "CAMS",
+                "Channel Partner Code": "OLD",
+            }
+        )
+        rows, _, _ = build_rows_from_bse(
+            [csv_text],
+            amfi_mapping={},
+            fallback_amfi_map={},
+            sebi_categories={},  # AMFI has nothing for this ISIN
+        )
+        assert rows[802].type == "EQUITY"
+        assert rows[802].sebi_category is None
+
+    def test_default_no_sebi_arg_keeps_prior_behavior(self):
+        # Backward-compat: callers that don't pass sebi_categories still work.
+        csv_text = _bse_csv(
+            {
+                "Unique No": "803",
+                "Scheme Code": "NOSEBI-A",
+                "AMC Scheme Code": "1",
+                "ISIN": "INF000NOS001",
+                "AMC Code": "Anything_MF",
+                "Scheme Type": "Equity",
+                "Scheme Name": "No-SEBI Fund",
+                "RTA Agent Code": "CAMS",
+                "Channel Partner Code": "NOS",
+            }
+        )
+        rows, _, _ = build_rows_from_bse([csv_text], {}, {})
+        assert rows[803].type == "EQUITY"
+        assert rows[803].sebi_category is None

@@ -69,7 +69,9 @@ def prepare_db(conn: sqlite3.Connection, rows, nav_rows, isin_rows) -> None:
             CREATE TABLE scheme(
                 id INTEGER NOT NULL PRIMARY KEY,
                 name, isin, amfi_code, type,
-                rta, rta_code, amc_code
+                rta, rta_code, amc_code,
+                sebi_category,
+                last_seen
             )
             """
         )
@@ -84,18 +86,28 @@ def prepare_db(conn: sqlite3.Connection, rows, nav_rows, isin_rows) -> None:
             [("version", db_version), ("dbformat", DBFORMAT)],
         )
         conn.executemany(
-            "INSERT INTO scheme(id, name, isin, amfi_code, type, rta, rta_code, amc_code) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO scheme"
+            "(id, name, isin, amfi_code, type, rta, rta_code, amc_code, "
+            "sebi_category, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (r.as_tuple() if isinstance(r, SchemeRow) else r for r in rows),
         )
 
         conn.execute("CREATE TABLE nav20180131(isin NOT NULL PRIMARY KEY, nav)")
         conn.executemany("INSERT INTO nav20180131(isin, nav) VALUES (?, ?)", nav_rows)
 
-        conn.execute("CREATE TABLE isin(isin NOT NULL PRIMARY KEY, name, issuer, type, status)")
+        conn.execute(
+            "CREATE TABLE isin(isin NOT NULL PRIMARY KEY, name, issuer, type, status, last_seen)"
+        )
+        today_iso_str = today.isoformat()
         conn.executemany(
-            "INSERT INTO isin(isin, name, issuer, type, status) VALUES (?, ?, ?, ?, ?)",
-            isin_rows,
+            "INSERT INTO isin(isin, name, issuer, type, status, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            # Every row coming through this path is a fresh captn3m0 fetch,
+            # so it's "confirmed today" by definition. Baseline carry-forward
+            # for the isin table (where un-confirmed rows keep their prior
+            # last_seen) lands in a later change.
+            ((*row, today_iso_str) if len(row) == 5 else row for row in isin_rows),
         )
 
     # VACUUM to reclaim any free pages from the bulk inserts. Must run
@@ -162,7 +174,10 @@ def build_pipeline() -> sqlite3.Connection:
     isin_rows = get_isin_data(session)
 
     bse_rows, total_bse, skipped_bse = build_rows_from_bse(
-        bse_csvs, amfi_payload["codes"], baseline_amfi_map
+        bse_csvs,
+        amfi_payload["codes"],
+        baseline_amfi_map,
+        sebi_categories=amfi_payload["categories"],
     )
     franklin_rows = build_rows_from_franklin(DATA_DIR / "franklin_funds.csv")
     rows = merge_rows(baseline_rows, bse_rows, franklin_rows)
