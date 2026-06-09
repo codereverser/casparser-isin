@@ -47,9 +47,17 @@ ISINData(
     name='INFOSYS LIMITED EQ FV RS 5',
     issuer='INFOSYS LIMITED',
     type='EQUITY SHARES',
-    status='ACTIVE'
+    status='ACTIVE',
+    symbol='INFY',
+    exchange='NSE'
 )
 ```
+
+For listed equities, `symbol` / `exchange` carry the exchange trading ticker
+(e.g. `INFY` / `NSE`), resolved from NSE's equity list — handy for pricing a
+demat holding that's identified only by ISIN. They are `None` for instruments
+with no listed symbol (most bonds / AIFs). To resolve many ISINs in one DB
+session, use `db.batch_isin_lookup([...])`.
 
 ### 31-Jan-2018 NAV search
 
