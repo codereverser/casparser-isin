@@ -483,6 +483,7 @@ def run(*, no_upload: bool = False) -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir) / "isin.db.candidate"
         _backup_to_file(mem_conn, tmp_path)
+        mem_conn.close()  # the backup is its only consumer — release the in-memory db
 
         # Row-count guard runs BEFORE the hash diff so a "no change" run
         # that silently lost rows still aborts loudly.

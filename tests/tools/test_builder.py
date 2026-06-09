@@ -8,6 +8,8 @@ so they get the most coverage.
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import pytest
 from cptools.builder import (
     _FRANKLIN_ROW_START,
@@ -772,7 +774,7 @@ class TestReadBaselineIsin:
         import sqlite3 as _sqlite3
 
         path = tmp_path / "noisin.db"
-        with _sqlite3.connect(path) as conn:
+        with closing(_sqlite3.connect(path)) as conn, conn:
             conn.execute("CREATE TABLE scheme(id INTEGER PRIMARY KEY)")
         assert read_baseline_isin(path) == {}
 
@@ -781,7 +783,7 @@ class TestReadBaselineIsin:
         import sqlite3 as _sqlite3
 
         path = tmp_path / "preLS.db"
-        with _sqlite3.connect(path) as conn:
+        with closing(_sqlite3.connect(path)) as conn, conn:
             conn.execute("CREATE TABLE isin(isin NOT NULL PRIMARY KEY, name, issuer, type, status)")
             conn.execute(
                 "INSERT INTO isin VALUES (?, ?, ?, ?, ?)",
@@ -795,7 +797,7 @@ class TestReadBaselineIsin:
         import sqlite3 as _sqlite3
 
         path = tmp_path / "full.db"
-        with _sqlite3.connect(path) as conn:
+        with closing(_sqlite3.connect(path)) as conn, conn:
             conn.execute(
                 "CREATE TABLE isin("
                 "isin NOT NULL PRIMARY KEY, name, issuer, type, status, last_seen)"

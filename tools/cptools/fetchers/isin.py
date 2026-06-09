@@ -33,6 +33,7 @@ import os
 import sqlite3
 import tempfile
 from collections import Counter
+from contextlib import closing
 from pathlib import Path
 
 import requests
@@ -123,7 +124,7 @@ def parse_isin_db(db_path: Path) -> tuple[list[list[str]], Counter]:
     # downloaded asset, and lets us drop the temp file as soon as the
     # iteration completes.
     uri = f"file:{db_path}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as conn:
+    with closing(sqlite3.connect(uri, uri=True)) as conn:
         cur = conn.execute(
             "SELECT isin, description, issuer_name, security_type_name, status FROM isin"
         )

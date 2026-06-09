@@ -10,6 +10,7 @@ real comparison logic without rebuilding the whole pipeline.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 
 import pytest
 from update_isin_db import RowCountGuardError, _check_row_counts
@@ -23,7 +24,7 @@ def _make_db(path, *, scheme_rows=0, isin_rows=None, nav_rows=0):
     types, so that's all we need.
     """
     isin_rows = list(isin_rows or [])
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "CREATE TABLE scheme(id INTEGER PRIMARY KEY, name, isin, "
             "amfi_code, type, rta, rta_code, amc_code)"

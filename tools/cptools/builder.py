@@ -13,6 +13,7 @@ import io
 import re
 import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -220,7 +221,7 @@ def read_baseline(db_path: Path) -> tuple[dict[int, SchemeRow], dict[str, str]]:
 
     rows: dict[int, SchemeRow] = {}
     amfi_map: dict[str, str] = {}
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         present = _existing_columns(conn, "scheme")
         select_cols = list(_SCHEME_BASE_COLS) + [
             col for col in _SCHEME_OPTIONAL_COLS if col in present
@@ -303,7 +304,7 @@ def read_baseline_isin(db_path: Path) -> dict[str, IsinRow]:
         return {}
 
     rows: dict[str, IsinRow] = {}
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         if "isin" not in {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }:

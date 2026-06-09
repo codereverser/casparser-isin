@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3 as _sqlite3
 import textwrap
+from contextlib import closing
 
 from cptools.fetchers.amfi import parse_2018_nav_file, parse_amfi_nav_text
 from cptools.fetchers.isin import KEEP_TYPES, parse_isin_db
@@ -183,7 +184,7 @@ def _make_isin_db(tmp_path, rows):
     issuer_name, security_type_name, status.
     """
     path = tmp_path / "captn3m0_fixture.db"
-    with _sqlite3.connect(path) as conn:
+    with closing(_sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "CREATE TABLE isin ("
             "  isin TEXT PRIMARY KEY,"

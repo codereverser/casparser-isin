@@ -15,6 +15,7 @@ baseline rows through.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from cptools.builder import IsinRow, SchemeRow
@@ -33,7 +34,7 @@ def _populate_baseline(path: Path, *, scheme_rows: list[SchemeRow], isin_rows: l
 def _read_scheme(path: Path) -> dict[int, tuple]:
     """Return ``{id: (isin, name, sebi_category, last_seen)}`` from a DB."""
     out = {}
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         for row in conn.execute("SELECT id, isin, name, sebi_category, last_seen FROM scheme"):
             out[row[0]] = (row[1], row[2], row[3], row[4])
     return out
@@ -42,7 +43,7 @@ def _read_scheme(path: Path) -> dict[int, tuple]:
 def _read_isin(path: Path) -> dict[str, tuple]:
     """Return ``{isin: (name, issuer, type, status, last_seen)}`` from a DB."""
     out = {}
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         for row in conn.execute("SELECT isin, name, issuer, type, status, last_seen FROM isin"):
             out[row[0]] = (row[1], row[2], row[3], row[4], row[5])
     return out

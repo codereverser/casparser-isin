@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from cptools.builder import IsinRow, SchemeRow
@@ -35,7 +36,7 @@ def _populate_baseline(path: Path, scheme_rows: list[SchemeRow], isin_rows: list
 
 
 def _scheme_count(path: Path) -> int:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         return conn.execute("SELECT COUNT(*) FROM scheme").fetchone()[0]
 
 
