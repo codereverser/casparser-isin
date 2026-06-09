@@ -74,13 +74,17 @@ class TestCLI:
         assert [x.message for x in caplog.records] == expected_log_msgs
 
         with monkeypatch.context() as m:
-            m.setattr(request, "urlopen", functools.partial(mock_urlopen, fail_on_urls=cli.DB_URL))
+            # The fetch tries the .gz first, then the uncompressed db — fail both
+            # to exercise the "db download failed" path.
+            m.setattr(
+                request,
+                "urlopen",
+                functools.partial(mock_urlopen, fail_on_urls=[cli.DB_GZ_URL, cli.DB_URL]),
+            )
             cli.main()
-            caplog_records = [x.message for x in caplog.records][-2:]
-            assert caplog_records == [
-                "Fetching database version :: 3099.1.1",
-                "Error fetching isin database :: Mock HTTP Error",
-            ]
+            msgs = [x.message for x in caplog.records]
+            assert "Fetching database version :: 3099.1.1" in msgs
+            assert msgs[-1] == "Error fetching isin database :: Mock HTTP Error"
 
     def test_update_success(self, monkeypatch, update_cli, caplog, isolated_isin_db):
         def mock_urlopen(request_obj, db_version="3099.01.01", fail_on_urls=None):
@@ -99,9 +103,32 @@ class TestCLI:
             m.setattr(request, "urlopen", mock_urlopen)
             cli.main()
         assert caplog.records[-1].message == "Updated casparser-isin database."
-        # Atomic swap actually replaced the file with the mocked payload.
+        # Default path fetches the .gz and gunzips it — the swapped file is the
+        # decompressed payload, proving the compressed download round-trips.
         assert isolated_isin_db.read_bytes() == b"mock_data"
         # And no stray *.tmp files were left behind.
+        assert not list(isolated_isin_db.parent.glob("isin.db.*.tmp"))
+
+    def test_update_falls_back_to_uncompressed(
+        self, monkeypatch, update_cli, caplog, isolated_isin_db
+    ):
+        """When the .gz artifact is unavailable, the update falls back to the
+        uncompressed db rather than failing."""
+
+        def mock_urlopen(request_obj):
+            # Only the compressed URL 404s; the plain db is served.
+            return MockResponse(
+                request_obj, remote_db_version="3099.01.01", fail_on_urls=[cli.DB_GZ_URL]
+            )
+
+        caplog.set_level(logging.INFO)
+        with monkeypatch.context() as m:
+            m.setattr(request, "urlopen", mock_urlopen)
+            cli.main()
+        msgs = [x.message for x in caplog.records]
+        assert any("falling back to uncompressed" in x for x in msgs)
+        assert msgs[-1] == "Updated casparser-isin database."
+        assert isolated_isin_db.read_bytes() == b"mock_data"  # plain payload, not gunzipped
         assert not list(isolated_isin_db.parent.glob("isin.db.*.tmp"))
 
     def test_dbformat_mismatch_skips_update(
@@ -155,8 +182,11 @@ class TestCLI:
         original_payload = isolated_isin_db.read_bytes()
 
         def mock_urlopen(request_obj):
+            # Both the compressed and uncompressed db downloads fail.
             return MockResponse(
-                request_obj, remote_db_version="3099.01.01", fail_on_urls=cli.DB_URL
+                request_obj,
+                remote_db_version="3099.01.01",
+                fail_on_urls=[cli.DB_GZ_URL, cli.DB_URL],
             )
 
         caplog.set_level(logging.INFO)

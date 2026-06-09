@@ -271,3 +271,146 @@ class TestIsinFirstPriority:
                 sentinel["called"] is True
             ), "scheme_lookup must be invoked when ISIN is not supplied"
             assert data.isin == "INF179K01319"
+
+
+class TestISINDbSymbols:
+    """The symbol / exchange enrichment on ISINDb (NSE equity ticker)."""
+
+    @staticmethod
+    def _make_db(path, *, with_symbol_cols, rows):
+        """Build a fixture isin.db. ``rows`` are dicts keyed by column name."""
+        import sqlite3
+        from contextlib import closing
+
+        with closing(sqlite3.connect(path)) as conn, conn:
+            if with_symbol_cols:
+                conn.execute(
+                    "CREATE TABLE isin(isin NOT NULL PRIMARY KEY, name, issuer, "
+                    "type, status, symbol, exchange, last_seen)"
+                )
+                conn.executemany(
+                    "INSERT INTO isin(isin, name, issuer, type, status, symbol, "
+                    "exchange, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            r["isin"],
+                            r["name"],
+                            r["issuer"],
+                            r["type"],
+                            r["status"],
+                            r.get("symbol"),
+                            r.get("exchange"),
+                            "2026-06-01",
+                        )
+                        for r in rows
+                    ],
+                )
+            else:
+                conn.execute(
+                    "CREATE TABLE isin(isin NOT NULL PRIMARY KEY, name, issuer, "
+                    "type, status, last_seen)"
+                )
+                conn.executemany(
+                    "INSERT INTO isin(isin, name, issuer, type, status, last_seen) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (r["isin"], r["name"], r["issuer"], r["type"], r["status"], "2026-06-01")
+                        for r in rows
+                    ],
+                )
+
+    def test_lookup_returns_symbol_and_exchange(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "isin.db"
+        self._make_db(
+            db_path,
+            with_symbol_cols=True,
+            rows=[
+                {
+                    "isin": "INE002A01018",
+                    "name": "Reliance Industries",
+                    "issuer": "RIL",
+                    "type": "EQUITY SHARES",
+                    "status": "ACTIVE",
+                    "symbol": "RELIANCE",
+                    "exchange": "NSE",
+                },
+                {
+                    "isin": "INE111A01011",
+                    "name": "Some Bond",
+                    "issuer": "Gov",
+                    "type": "BOND",
+                    "status": "ACTIVE",  # no symbol
+                },
+            ],
+        )
+        monkeypatch.setenv("CASPARSER_ISIN_DB", str(db_path))
+        with ISINDb() as db:
+            eq = db.isin_lookup("INE002A01018")
+            assert eq.symbol == "RELIANCE"
+            assert eq.exchange == "NSE"
+            bond = db.isin_lookup("INE111A01011")
+            assert bond.symbol is None
+            assert bond.exchange is None
+
+    def test_lookup_degrades_on_legacy_db_without_symbol_columns(self, tmp_path, monkeypatch):
+        # A DB built before the symbol columns existed must still resolve, with
+        # symbol/exchange defaulting to None (graceful column fallback).
+        db_path = tmp_path / "isin.db"
+        self._make_db(
+            db_path,
+            with_symbol_cols=False,
+            rows=[
+                {
+                    "isin": "INE002A01018",
+                    "name": "Reliance Industries",
+                    "issuer": "RIL",
+                    "type": "EQUITY SHARES",
+                    "status": "ACTIVE",
+                }
+            ],
+        )
+        monkeypatch.setenv("CASPARSER_ISIN_DB", str(db_path))
+        with ISINDb() as db:
+            data = db.isin_lookup("INE002A01018")
+        assert data is not None
+        assert data.name == "Reliance Industries"
+        assert data.symbol is None
+        assert data.exchange is None
+
+    def test_batch_isin_lookup(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "isin.db"
+        self._make_db(
+            db_path,
+            with_symbol_cols=True,
+            rows=[
+                {
+                    "isin": "INE002A01018",
+                    "name": "Reliance",
+                    "issuer": "RIL",
+                    "type": "EQUITY SHARES",
+                    "status": "ACTIVE",
+                    "symbol": "RELIANCE",
+                    "exchange": "NSE",
+                },
+                {
+                    "isin": "INE009A01021",
+                    "name": "Infosys",
+                    "issuer": "INFY",
+                    "type": "EQUITY SHARES",
+                    "status": "ACTIVE",
+                    "symbol": "INFY",
+                    "exchange": "NSE",
+                },
+            ],
+        )
+        monkeypatch.setenv("CASPARSER_ISIN_DB", str(db_path))
+        db = ISINDb()
+        out = db.batch_isin_lookup(["INE002A01018", "INE009A01021", "ZZZZZZZZZZZZ", "", None])
+        assert db.connection is None  # batch opened + closed its own session
+        assert set(out) == {"INE002A01018", "INE009A01021"}
+        assert out["INE002A01018"].symbol == "RELIANCE"
+        assert out["INE009A01021"].symbol == "INFY"
+
+    def test_batch_isin_lookup_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CASPARSER_ISIN_DB", str(tmp_path / "missing.db"))
+        assert ISINDb().batch_isin_lookup([]) == {}

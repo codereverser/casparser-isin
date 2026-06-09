@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026.6.9
+- **`dbformat` bumped to `3`.** The `isin` table gains nullable `symbol` /
+  `exchange` columns carrying the exchange trading ticker for listed equities
+  (e.g. `RELIANCE` / `NSE`). Older CLI versions calling `casparser-isin
+  --update` detect the format mismatch and keep their bundled DB; upgrade the
+  package to pick up the new format.
+- **Equity symbol resolution.** The build joins NSE's published equity list
+  (`EQUITY_L.csv`) on ISIN to populate `symbol` / `exchange`, so a demat equity
+  holding identified only by ISIN (NSDL / CDSL eCAS) can be priced via a
+  symbol-keyed feed. `ISINData` and `ISINDb.isin_lookup` now return
+  `symbol` / `exchange` (degrading gracefully against a pre-`symbol` DB), and a
+  new `ISINDb.batch_isin_lookup` resolves many ISINs in a single session.
+- **Compressed DB transfer.** The build uploads a gzip copy (`isin.db.gz`)
+  alongside the plain DB; `casparser-isin --update` now prefers the `.gz`
+  (the DB compresses ~3–4×, a much smaller download), verifies the decompressed
+  bytes against the meta `sha256`, and falls back to the uncompressed DB when
+  the `.gz` is unavailable. The `CASPARSER_ISIN_TOOLS_NO_NSE` env var skips the
+  NSE fetch in the build, mirroring the existing BSE toggle.
+- **Updated `isin.db`** — refreshed from current AMFI / BSE / captn3m0 / NSE
+  data; 2362 equities now carry an NSE symbol.
+
 ## 2026.5.1
 - **Python**: drop support for Python 3.9 / 3.10; require Python 3.11+.
 - **`dbformat` bumped to `2`.** The shipped DB gains two new nullable

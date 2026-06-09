@@ -11,6 +11,7 @@ import textwrap
 
 from cptools.fetchers.amfi import parse_2018_nav_file, parse_amfi_nav_text
 from cptools.fetchers.isin import KEEP_TYPES, parse_isin_db
+from cptools.fetchers.nse import parse_nse_equity_csv
 
 
 def test_parse_amfi_nav_text_extracts_isin_and_reinvest_flag():
@@ -418,3 +419,51 @@ def test_keep_types_is_a_proper_subset_of_all_observed_types():
     assert "SECURITISED INSTRUMENT" not in KEEP_TYPES
     assert "MUTUAL FUND UNIT" not in KEEP_TYPES
     assert "MUTUAL FUND UNIT (TRASE)" not in KEEP_TYPES
+
+
+class TestParseNSEEquityCsv:
+    """The NSE EQUITY_L.csv parser -- ISIN -> (symbol, exchange)."""
+
+    def test_basic_mapping_and_header_space_stripping(self):
+        # NSE's real header carries leading spaces on every column after the
+        # first; the parser must strip keys before lookup.
+        text = (
+            "SYMBOL, NAME OF COMPANY, SERIES, DATE OF LISTING, PAID UP VALUE,"
+            " MARKET LOT, ISIN NUMBER, FACE VALUE\n"
+            "RELIANCE,Reliance Industries Limited,EQ,29-NOV-1995,10,1,INE002A01018,10\n"
+            "INFY,Infosys Limited,EQ,08-FEB-1995,5,1,INE009A01021,5\n"
+        )
+        out = parse_nse_equity_csv(text)
+        assert out["INE002A01018"] == ("RELIANCE", "NSE")
+        assert out["INE009A01021"] == ("INFY", "NSE")
+
+    def test_skips_rows_without_valid_isin_or_symbol(self):
+        text = (
+            "SYMBOL, NAME OF COMPANY, SERIES,  ISIN NUMBER\n"
+            "GOOD,Good Co,EQ,INE002A01018\n"
+            "BADISIN,Bad Isin Co,EQ,NOTANISIN\n"  # 9 chars, not 12
+            ",Missing Symbol Co,EQ,INE009A01021\n"  # empty symbol
+        )
+        out = parse_nse_equity_csv(text)
+        assert out == {"INE002A01018": ("GOOD", "NSE")}
+
+    def test_eq_series_wins_over_surveillance_series(self):
+        # Same ISIN under EQ and BE (surveillance) -- EQ must win regardless
+        # of row order.
+        eq_first = (
+            "SYMBOL, NAME OF COMPANY, SERIES,  ISIN NUMBER\n"
+            "FOO,Foo Ltd,EQ,INE002A01018\n"
+            "FOO,Foo Ltd,BE,INE002A01018\n"
+        )
+        be_first = (
+            "SYMBOL, NAME OF COMPANY, SERIES,  ISIN NUMBER\n"
+            "FOO,Foo Ltd,BE,INE002A01018\n"
+            "FOO,Foo Ltd,EQ,INE002A01018\n"
+        )
+        assert parse_nse_equity_csv(eq_first)["INE002A01018"] == ("FOO", "NSE")
+        assert parse_nse_equity_csv(be_first)["INE002A01018"] == ("FOO", "NSE")
+
+    def test_symbol_and_isin_uppercased(self):
+        text = "SYMBOL, NAME OF COMPANY, SERIES,  ISIN NUMBER\n" "foo,Foo Ltd,EQ,ine002a01018\n"
+        out = parse_nse_equity_csv(text)
+        assert out == {"INE002A01018": ("FOO", "NSE")}

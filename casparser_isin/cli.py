@@ -1,4 +1,5 @@
 import argparse
+import gzip
 import hashlib
 import logging
 import os
@@ -15,6 +16,10 @@ from .utils import get_isin_db_path
 
 META_URL = "https://casparser.atomcoder.com/isin.db.meta"
 DB_URL = "https://casparser.atomcoder.com/isin.db"
+# Gzip-compressed copy of the same DB. Preferred for the update download (the DB
+# compresses ~3-4x, so a much smaller transfer); the uncompressed URL above is
+# the fallback for an older server / a missing artifact.
+DB_GZ_URL = "https://casparser.atomcoder.com/isin.db.gz"
 
 # Stream the DB download in 1 MiB chunks. The DB is ~50 MB; this caps peak
 # memory at ~1 MiB regardless of file size and lets shutil.copyfileobj move
@@ -97,26 +102,36 @@ def check_isin_db():
         sys.exit(0)
 
 
-def _download_to_temp(url: str, dest_dir, *, expected_sha256: str | None = None):
+def _download_to_temp(
+    url: str, dest_dir, *, expected_sha256: str | None = None, decompress: bool = False
+):
     """
     Stream ``url`` into a temp file alongside ``dest_dir`` and return its path.
 
     Streaming avoids holding the entire ~50 MB DB in memory. Writing to a temp
     file in the same directory as the final destination guarantees the
-    subsequent ``os.replace`` is atomic (same filesystem). If
-    ``expected_sha256`` is supplied, the download is verified and the temp file
-    deleted on mismatch.
+    subsequent ``os.replace`` is atomic (same filesystem). When ``decompress``
+    is set the response is gunzipped on the fly, so the hash + temp file are the
+    *decompressed* DB. If ``expected_sha256`` is supplied, the (decompressed)
+    bytes are verified and the temp file deleted on mismatch.
     """
     fd, tmp_path = tempfile.mkstemp(prefix="isin.db.", suffix=".tmp", dir=str(dest_dir))
     sha = hashlib.sha256()
     try:
         with request.urlopen(build_request(url)) as response, os.fdopen(fd, "wb") as out:
-            while True:
-                chunk = response.read(_DOWNLOAD_CHUNK)
-                if not chunk:
-                    break
-                sha.update(chunk)
-                out.write(chunk)
+            # ``expected_sha256`` is always the *uncompressed* DB hash, so hash the
+            # decompressed stream — gunzip first when fetching the .gz artifact.
+            source = gzip.GzipFile(fileobj=response) if decompress else response
+            try:
+                while True:
+                    chunk = source.read(_DOWNLOAD_CHUNK)
+                    if not chunk:
+                        break
+                    sha.update(chunk)
+                    out.write(chunk)
+            finally:
+                if decompress:
+                    source.close()
         if expected_sha256 is not None:
             actual = sha.hexdigest()
             if actual.lower() != expected_sha256.lower():
@@ -132,6 +147,22 @@ def _download_to_temp(url: str, dest_dir, *, expected_sha256: str | None = None)
     return tmp_path
 
 
+def _fetch_db(dest_dir, expected_sha256: str | None):
+    """Download the DB into ``dest_dir``, preferring the gzip-compressed artifact.
+
+    Falls back to the uncompressed URL when the ``.gz`` is unavailable (older
+    server) or unreadable as gzip — so a new client keeps working against an old
+    server, and a transient gzip problem doesn't block the update. Returns the
+    temp-file path (decompressed, verified against ``expected_sha256``)."""
+    try:
+        return _download_to_temp(
+            DB_GZ_URL, dest_dir, expected_sha256=expected_sha256, decompress=True
+        )
+    except (HTTPError, gzip.BadGzipFile, EOFError) as exc:
+        logging.info("Compressed db unavailable (%s); falling back to uncompressed", exc)
+        return _download_to_temp(DB_URL, dest_dir, expected_sha256=expected_sha256)
+
+
 def update_isin_db():
     remote_meta, local_meta = get_isin_db_details()
     if remote_meta is None:
@@ -144,11 +175,7 @@ def update_isin_db():
         dest = get_isin_db_path()
         dest_dir = dest.parent
         try:
-            tmp_path = _download_to_temp(
-                DB_URL,
-                dest_dir,
-                expected_sha256=remote_meta.get("sha256"),
-            )
+            tmp_path = _fetch_db(dest_dir, remote_meta.get("sha256"))
         except HTTPError as e:
             logging.error("Error fetching isin database :: %s", e.reason)
             return

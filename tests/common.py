@@ -1,3 +1,4 @@
+import gzip
 import socket
 from http.client import HTTPResponse
 from urllib import error, request
@@ -18,7 +19,7 @@ class MockResponse(HTTPResponse):
         self,
         mock_request: request.Request,
         remote_db_version="2000.01.01",
-        remote_dbformat="2",
+        remote_dbformat="3",  # matches the bundled DB's current dbformat
         fail_on_urls=None,
         db_payload=b"mock_data",
     ):
@@ -38,6 +39,8 @@ class MockResponse(HTTPResponse):
             return (
                 f"version={self.__remote_db_version}\ndbformat={self.__remote_dbformat}\n"
             ).encode()
+        if self.__mock_request.full_url == cli.DB_GZ_URL:
+            return gzip.compress(self.__db_payload)
         if self.__mock_request.full_url == cli.DB_URL:
             return self.__db_payload
         return b""

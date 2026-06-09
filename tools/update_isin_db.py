@@ -40,6 +40,7 @@ from cptools.builder import (
 from cptools.fetchers.amfi import get_amfi_isin_map
 from cptools.fetchers.bse import fetch_bse_master_data
 from cptools.fetchers.isin import KEEP_TYPES, get_isin_data
+from cptools.fetchers.nse import fetch_nse_equity_isin_map
 from cptools.settings import (
     DATA_DIR,
     ISIN_DB_PATH,
@@ -47,11 +48,15 @@ from cptools.settings import (
     bse_disabled,
     configure_logging,
     logger,
+    nse_disabled,
 )
 from cptools.utils import get_session
 from packaging import version
 
-DBFORMAT = "2"
+# Bumped 2 -> 3 when the ``isin`` table gained the ``symbol`` / ``exchange``
+# columns (NSE equity ticker enrichment). The runtime lookup degrades
+# gracefully against an older DB, but a fresh build emits the new schema.
+DBFORMAT = "3"
 
 _NO_CHANGE = 0
 _PUBLISHED = 1
@@ -101,11 +106,13 @@ def prepare_db(conn: sqlite3.Connection, rows, nav_rows, isin_rows) -> None:
         conn.executemany("INSERT INTO nav20180131(isin, nav) VALUES (?, ?)", nav_rows)
 
         conn.execute(
-            "CREATE TABLE isin(isin NOT NULL PRIMARY KEY, name, issuer, type, status, last_seen)"
+            "CREATE TABLE isin("
+            "isin NOT NULL PRIMARY KEY, name, issuer, type, status, "
+            "symbol, exchange, last_seen)"
         )
         conn.executemany(
-            "INSERT INTO isin(isin, name, issuer, type, status, last_seen) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO isin(isin, name, issuer, type, status, symbol, exchange, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (r.as_tuple() if isinstance(r, IsinRow) else r for r in isin_rows),
         )
 
@@ -407,6 +414,26 @@ def _fetch_bse_optional(
         return {}, "failed"
 
 
+def _fetch_nse_optional(session) -> dict[str, tuple[str, str]]:
+    """Fetch NSE equity symbols; tolerate failure and an explicit env-var skip.
+
+    Returns ``{isin: (symbol, exchange)}`` (empty on skip / failure). The NSE
+    list only enriches the ``isin`` table with trading symbols, so an outage or
+    layout change degrades the build to "symbols don't refresh" -- baseline
+    carry-forward keeps previously-resolved symbols alive. Never raises.
+    """
+    if nse_disabled():
+        logger.info("NSE disabled via CASPARSER_ISIN_TOOLS_NO_NSE; skipping")
+        return {}
+    try:
+        return fetch_nse_equity_isin_map(session)
+    except Exception:
+        # NSE has the same failure surface as BSE (WAF interstitial, layout
+        # change, timeout). None of it should kill the build.
+        logger.warning("NSE equity fetch failed; continuing without fresh symbols", exc_info=True)
+        return {}
+
+
 def build_pipeline() -> sqlite3.Connection:
     """Fetch everything and return a populated in-memory connection."""
     session = get_session()
@@ -434,8 +461,16 @@ def build_pipeline() -> sqlite3.Connection:
     # out -- equivalent to a one-time cleanup on the first run under the
     # new scope contract.
     baseline_isin = read_baseline_isin(ISIN_DB_PATH)
-    isin_rows = merge_isin_rows(baseline_isin, fresh_isin_rows, keep_types=KEEP_TYPES)
+    nse_symbol_map = _fetch_nse_optional(session)
+    isin_rows = merge_isin_rows(
+        baseline_isin, fresh_isin_rows, keep_types=KEEP_TYPES, symbol_map=nse_symbol_map
+    )
     _log_isin_merge_stats(baseline_isin, fresh_isin_rows, isin_rows)
+    logger.info(
+        "isin symbols: %d NSE mappings applied, %d rows now carry a symbol",
+        len(nse_symbol_map),
+        sum(1 for r in isin_rows if r.symbol),
+    )
 
     nav_rows = list(amfi_payload["navs"].items())
     return _build_in_memory(rows, nav_rows, isin_rows)

@@ -257,6 +257,12 @@ class IsinRow:
     human-readable name, the issuer, instrument type, and lifecycle status.
     ``last_seen`` behaves the same as on :class:`SchemeRow`: ISO date of the
     most recent live confirmation, or ``None`` for un-touched baseline rows.
+
+    ``symbol`` / ``exchange`` carry the exchange trading ticker (e.g.
+    ``RELIANCE`` / ``NSE``) for equities, joined in from the NSE equity list
+    (see :mod:`cptools.fetchers.nse`). Both are ``None`` for instruments with
+    no listed symbol (most bonds / AIFs) and for rows carried forward from a
+    baseline built before this enrichment existed.
     """
 
     isin: str
@@ -264,14 +270,25 @@ class IsinRow:
     issuer: str | None
     type: str
     status: str | None
+    symbol: str | None = None
+    exchange: str | None = None
     last_seen: str | None = None
 
     def as_tuple(self) -> tuple:
-        return (self.isin, self.name, self.issuer, self.type, self.status, self.last_seen)
+        return (
+            self.isin,
+            self.name,
+            self.issuer,
+            self.type,
+            self.status,
+            self.symbol,
+            self.exchange,
+            self.last_seen,
+        )
 
 
 _ISIN_BASE_COLS = ("isin", "name", "issuer", "type", "status")
-_ISIN_OPTIONAL_COLS = ("last_seen",)
+_ISIN_OPTIONAL_COLS = ("symbol", "exchange", "last_seen")
 
 
 def read_baseline_isin(db_path: Path) -> dict[str, IsinRow]:
@@ -304,6 +321,8 @@ def read_baseline_isin(db_path: Path) -> dict[str, IsinRow]:
                 issuer=kw["issuer"],
                 type=kw["type"],
                 status=kw["status"],
+                symbol=kw.get("symbol"),
+                exchange=kw.get("exchange"),
                 last_seen=kw.get("last_seen"),
             )
 
@@ -315,6 +334,7 @@ def merge_isin_rows(
     baseline: dict[str, IsinRow],
     new_rows: list[list[str]],
     keep_types: frozenset[str],
+    symbol_map: dict[str, tuple[str, str]] | None = None,
     today: str | None = None,
 ) -> list[IsinRow]:
     """Merge baseline isin rows with fresh captn3m0 rows. **Append-only.**
@@ -338,8 +358,17 @@ def merge_isin_rows(
     ``new_rows`` items are 5-tuples of ``[isin, name, issuer, type, status]``
     -- the shape produced by :func:`cptools.fetchers.isin.parse_isin_csv`,
     which already applies the type filter and casing normalisation.
+
+    ``symbol_map`` is the ``isin -> (symbol, exchange)`` mapping from the NSE
+    equity list (:func:`cptools.fetchers.nse.fetch_nse_equity_isin_map`). A
+    fresh symbol overrides whatever the row carried; an ISIN absent from the
+    map keeps any symbol a previous build resolved (so a name temporarily
+    dropped from NSE's list doesn't lose its ticker). Pass ``None`` / empty to
+    leave symbols untouched -- the build degrades to baseline symbols when the
+    NSE fetch fails.
     """
     today = today or today_iso()
+    symbol_map = symbol_map or {}
     out: dict[str, IsinRow] = {}
 
     # 1. Baseline carry-forward, filtered to keep_types.
@@ -371,6 +400,15 @@ def merge_isin_rows(
             status=status or None,
             last_seen=today,
         )
+
+    # 3. Attach NSE trading symbols. A fresh symbol wins; rows absent from the
+    #    map keep whatever symbol they carried forward from baseline.
+    for isin, sym in symbol_map.items():
+        row = out.get(isin)
+        if row is None:
+            continue  # NSE lists it but it's out of scope / not in the isin feed
+        symbol, exchange = sym
+        out[isin] = replace(row, symbol=symbol, exchange=exchange)
 
     return list(out.values())
 

@@ -38,6 +38,7 @@ dev = [
 tools = [
     "b2sdk>=2.10.0,<3",
     "lxml>=6.0.0,<7",
+    "python-dotenv>=1.0.0,<2",
     "requests>=2.32.0,<3",
     "requests-cache>=1.2.0,<2",
 ]

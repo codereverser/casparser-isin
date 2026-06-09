@@ -27,6 +27,20 @@ DATA_DIR = TOOLS_DIR / "files"  # static reference data (AMFI 2018, Franklin CSV
 ISIN_DB_PATH = REPO_DIR / "casparser_isin" / "isin.db"
 ISIN_META_PATH = REPO_DIR / "casparser_isin" / "isin.db.meta"
 
+# Autoload .env from the repo root so B2_* credentials (and the
+# CASPARSER_ISIN_TOOLS_* toggles) need not be exported by hand. Loaded at
+# import time because every entry path -- the updater, the b2 uploader, the
+# fetchers -- imports this module first. Explicit values already in the
+# environment win over the file (load_dotenv does not override by default).
+# python-dotenv lives in the optional ``tools`` group; degrade gracefully if
+# settings is imported without it (e.g. a runtime-only install).
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(REPO_DIR / ".env")
+except ModuleNotFoundError:
+    pass
+
 
 def _resolve_cache_dir() -> Path:
     """Pick a writable cache dir without pulling in platformdirs."""
@@ -71,6 +85,18 @@ def bse_disabled() -> bool:
     given run.
     """
     return _truthy_env("CASPARSER_ISIN_TOOLS_NO_BSE")
+
+
+def nse_disabled() -> bool:
+    """True when the operator has explicitly disabled the NSE equity fetch.
+
+    The NSE equity list only *enriches* the ``isin`` table with trading
+    symbols; skipping it degrades the build to "symbols don't refresh" (prior
+    symbols carry forward) rather than "build fails".
+
+    Set ``CASPARSER_ISIN_TOOLS_NO_NSE=1`` to skip the NSE fetch on a given run.
+    """
+    return _truthy_env("CASPARSER_ISIN_TOOLS_NO_NSE")
 
 
 def configure_logging(level: int = logging.INFO) -> None:

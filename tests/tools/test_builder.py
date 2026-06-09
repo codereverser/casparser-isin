@@ -808,3 +808,84 @@ class TestReadBaselineIsin:
         row = out["INE001A01036"]
         assert row.last_seen == "2026-05-21"
         assert row.name == "HDFC"
+
+
+class TestMergeIsinRowsSymbols:
+    """Symbol enrichment in merge_isin_rows (NSE equity ticker join)."""
+
+    def _equity(self, isin, symbol=None, exchange=None, last_seen="2024-01-15"):
+        return IsinRow(
+            isin=isin,
+            name="Some Equity",
+            issuer="Some Issuer",
+            type="EQUITY SHARES",
+            status="ACTIVE",
+            symbol=symbol,
+            exchange=exchange,
+            last_seen=last_seen,
+        )
+
+    def test_symbol_attached_to_live_row(self):
+        live = [["INE002A01018", "Reliance", "RIL", "EQUITY SHARES", "ACTIVE"]]
+        symbol_map = {"INE002A01018": ("RELIANCE", "NSE")}
+        out = merge_isin_rows(
+            {}, live, keep_types=KEEP_TYPES, symbol_map=symbol_map, today="2026-06-01"
+        )
+        assert out[0].symbol == "RELIANCE"
+        assert out[0].exchange == "NSE"
+
+    def test_symbol_attached_to_carried_forward_baseline_row(self):
+        baseline = {"INE002A01018": self._equity("INE002A01018")}
+        symbol_map = {"INE002A01018": ("RELIANCE", "NSE")}
+        out = merge_isin_rows(
+            baseline, [], keep_types=KEEP_TYPES, symbol_map=symbol_map, today="2026-06-01"
+        )
+        assert out[0].symbol == "RELIANCE"
+        assert out[0].exchange == "NSE"
+        assert out[0].last_seen == "2024-01-15"  # symbol attach doesn't re-confirm
+
+    def test_isin_absent_from_map_keeps_baseline_symbol(self):
+        # A name temporarily dropped from NSE's list keeps its prior symbol.
+        baseline = {"INE002A01018": self._equity("INE002A01018", symbol="RELIANCE", exchange="NSE")}
+        out = merge_isin_rows(
+            baseline, [], keep_types=KEEP_TYPES, symbol_map={}, today="2026-06-01"
+        )
+        assert out[0].symbol == "RELIANCE"
+        assert out[0].exchange == "NSE"
+
+    def test_fresh_symbol_overrides_stale_baseline_symbol(self):
+        baseline = {"INE002A01018": self._equity("INE002A01018", symbol="OLDSYM", exchange="NSE")}
+        symbol_map = {"INE002A01018": ("RELIANCE", "NSE")}
+        out = merge_isin_rows(
+            baseline, [], keep_types=KEEP_TYPES, symbol_map=symbol_map, today="2026-06-01"
+        )
+        assert out[0].symbol == "RELIANCE"
+
+    def test_symbol_for_unknown_isin_is_ignored(self):
+        # NSE lists a symbol whose ISIN isn't in the isin feed (out of scope) --
+        # no phantom row is created.
+        out = merge_isin_rows(
+            {}, [], keep_types=KEEP_TYPES, symbol_map={"INE999Z01011": ("GHOST", "NSE")}
+        )
+        assert out == []
+
+    def test_none_symbol_map_leaves_symbols_untouched(self):
+        baseline = {"INE002A01018": self._equity("INE002A01018", symbol="RELIANCE", exchange="NSE")}
+        out = merge_isin_rows(baseline, [], keep_types=KEEP_TYPES, today="2026-06-01")
+        assert out[0].symbol == "RELIANCE"
+
+    def test_as_tuple_shape_matches_insert_columns(self):
+        # as_tuple feeds the 8-column INSERT in prepare_db; lock the order.
+        row = self._equity(
+            "INE002A01018", symbol="RELIANCE", exchange="NSE", last_seen="2026-06-01"
+        )
+        assert row.as_tuple() == (
+            "INE002A01018",
+            "Some Equity",
+            "Some Issuer",
+            "EQUITY SHARES",
+            "ACTIVE",
+            "RELIANCE",
+            "NSE",
+            "2026-06-01",
+        )
