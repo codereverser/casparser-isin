@@ -627,6 +627,13 @@ def merge_rows(
         seen_keys[r.dedupe_key()] = r.id
         out[r.id] = r
 
+    # Synthetic id allocator for brand-new rows whose natural id (BSE Unique
+    # No / Franklin synthetic id) collides with a baseline row that is *not*
+    # the same scheme -- e.g. BSE remapped a Unique No to a new ISIN (UTI's
+    # INF789F01* -> INF789F1* reformat). Start above every id any source can
+    # produce so synthetic ids never collide with a not-yet-processed row.
+    next_id = max([*out, *bse_rows, *franklin_rows], default=-1) + 1
+
     # 2. Live sources. Either re-confirm a baseline row (bump last_seen)
     #    or insert as a brand-new row tagged with today's date.
     for source in (bse_rows, franklin_rows):
@@ -644,8 +651,16 @@ def merge_rows(
                     else r.sebi_category,
                 )
                 continue
-            # Brand-new row.
-            seen_keys[r.dedupe_key()] = row_id
-            out[row_id] = replace(r, last_seen=today)
+            # Brand-new row. If its natural id already belongs to a different
+            # scheme (id collision), reallocate to a fresh synthetic id so the
+            # baseline row survives. Runtime lookups are by ISIN ordered by
+            # `id DESC`, so the higher synthetic id wins for the new mapping
+            # while the old ISIN remains resolvable from the preserved row.
+            target_id = row_id
+            if target_id in out:
+                target_id = next_id
+                next_id += 1
+            seen_keys[r.dedupe_key()] = target_id
+            out[target_id] = replace(r, id=target_id, last_seen=today)
 
     return list(out.values())

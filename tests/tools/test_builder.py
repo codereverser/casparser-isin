@@ -336,6 +336,54 @@ def test_merge_rows_keeps_baseline_when_bse_drops_it():
     assert merged[0].last_seen == "2024-01-15"
 
 
+def test_merge_rows_id_remap_preserves_old_isin():
+    # BSE periodically reissues a Unique No against a different ISIN (e.g.
+    # UTI's INF789F01* -> INF789F1* reformat). The live row shares the
+    # baseline id but has a new dedupe_key, so it must NOT clobber the
+    # baseline row -- the old ISIN has to stay resolvable for historical CAS
+    # statements. The new mapping lands on a fresh synthetic id.
+    baseline = {
+        842: SchemeRow(
+            id=842,
+            name="UTI Liquid Fund",
+            isin="INF789F01AZ5",  # old ISIN
+            amfi_code="789",
+            type="DEBT",
+            rta="CAMS",
+            rta_code="UTI842",
+            amc_code="78",
+            last_seen="2024-01-15",
+        )
+    }
+    # Same Unique No, new ISIN.
+    bse_rows = {
+        842: SchemeRow(
+            id=842,
+            name="UTI Liquid Fund",
+            isin="INF789F1AE94",  # reformatted ISIN
+            amfi_code="789",
+            type="DEBT",
+            rta="CAMS",
+            rta_code="UTI842",
+            amc_code="78",
+        )
+    }
+    merged = merge_rows(baseline, bse_rows, {}, today="2026-05-22")
+    by_isin = {r.isin: r for r in merged}
+    # Both ISINs survive.
+    assert set(by_isin) == {"INF789F01AZ5", "INF789F1AE94"}
+    # Baseline row keeps its id (842) and frozen last_seen.
+    assert by_isin["INF789F01AZ5"].id == 842
+    assert by_isin["INF789F01AZ5"].last_seen == "2024-01-15"
+    # New mapping got a fresh synthetic id above every source id, and runtime
+    # `ORDER BY id DESC` therefore prefers it.
+    assert by_isin["INF789F1AE94"].id > 842
+    assert by_isin["INF789F1AE94"].last_seen == "2026-05-22"
+    # No id collisions in the output.
+    ids = [r.id for r in merged]
+    assert len(ids) == len(set(ids))
+
+
 class TestMergeRowsLastSeen:
     """Live-source confirmation bumps last_seen; baseline-only rows freeze."""
 
