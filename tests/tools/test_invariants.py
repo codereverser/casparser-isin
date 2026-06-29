@@ -149,8 +149,7 @@ def test_no_live_data_preserves_every_baseline_row(tmp_path, monkeypatch):
     monkeypatch.setattr(update_isin_db, "get_isin_data", lambda s: [])
     # The session never gets used (every fetcher is stubbed), but
     # get_session() must return *something* so the orchestrator doesn't
-    # try to build a real requests_cache session (which on Python 3.14
-    # fails at annotation resolution time).
+    # build a real cached session.
     monkeypatch.setattr(update_isin_db, "get_session", lambda: None)
 
     # Run -- the hash diff should report no change because all baseline

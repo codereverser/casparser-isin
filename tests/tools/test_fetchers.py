@@ -422,6 +422,209 @@ def test_keep_types_is_a_proper_subset_of_all_observed_types():
     assert "MUTUAL FUND UNIT (TRASE)" not in KEEP_TYPES
 
 
+class TestAssetCache:
+    """The on-disk cache for the captn3m0 release asset (get_isin_data)."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        """Point the cache dir at tmp_path and stub the network layer.
+
+        Returns ``(isin_module, calls)`` where ``calls["n"]`` counts how many
+        times an actual download happened.
+        """
+        import cptools.fetchers.isin as isin
+        from cptools.settings import get_cache_dir
+
+        monkeypatch.setenv("CASPARSER_ISIN_TOOLS_CACHE", str(tmp_path))
+        monkeypatch.delenv("CASPARSER_ISIN_TOOLS_NO_CACHE", raising=False)
+
+        def _make_db(dest):
+            with closing(_sqlite3.connect(dest)) as c:
+                c.execute(
+                    "CREATE TABLE isin(isin, issuer_name, description, "
+                    "security_type_name, status)"
+                )
+                c.executemany(
+                    "INSERT INTO isin VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (f"INE{i:06d}", "Iss", "Desc", "EQUITY SHARES", "ACTIVE")
+                        for i in range(11000)
+                    ],
+                )
+                c.commit()
+
+        calls = {"n": 0}
+
+        def _fake_stream(session, url, dest):
+            calls["n"] += 1
+            _make_db(dest)
+            import os
+
+            return os.path.getsize(dest)
+
+        monkeypatch.setattr(
+            isin, "_find_latest_release_asset", lambda s: ("v1", "http://x/isin.db")
+        )
+        monkeypatch.setattr(isin, "_stream_download", _fake_stream)
+        return isin, calls, get_cache_dir
+
+    def test_miss_then_hit_downloads_once(self, tmp_path, monkeypatch):
+        isin, calls, _ = self._setup(tmp_path, monkeypatch)
+        assert len(isin.get_isin_data(None)) == 11000
+        assert calls["n"] == 1
+        # Second call within the TTL is served from disk, no new download.
+        assert len(isin.get_isin_data(None)) == 11000
+        assert calls["n"] == 1
+
+    def test_expired_cache_redownloads(self, tmp_path, monkeypatch):
+        import os
+        import time
+
+        isin, calls, get_cache_dir = self._setup(tmp_path, monkeypatch)
+        isin.get_isin_data(None)
+        assert calls["n"] == 1
+        # Age the cached asset past the 12h TTL.
+        from cptools.cache import CACHE_TTL_SECONDS
+
+        cached = get_cache_dir() / "captn3m0-isin.db"
+        old = time.time() - (CACHE_TTL_SECONDS + 60)
+        os.utime(cached, (old, old))
+        isin.get_isin_data(None)
+        assert calls["n"] == 2
+
+    def test_no_cache_env_bypasses_disk_cache(self, tmp_path, monkeypatch):
+        isin, calls, get_cache_dir = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setenv("CASPARSER_ISIN_TOOLS_NO_CACHE", "1")
+        isin.get_isin_data(None)
+        isin.get_isin_data(None)
+        # Every call re-downloads; nothing is persisted to the cache dir.
+        assert calls["n"] == 2
+        assert list(get_cache_dir().glob("captn3m0-*.db")) == []
+
+    def test_cache_holds_a_single_file(self, tmp_path, monkeypatch):
+        isin, calls, get_cache_dir = self._setup(tmp_path, monkeypatch)
+        isin.get_isin_data(None)
+        names = sorted(p.name for p in get_cache_dir().glob("captn3m0-*"))
+        assert names == ["captn3m0-isin.db"]
+
+
+class TestBuildSession:
+    """build_session() picks the file cache, or none when disabled."""
+
+    def test_cached_mode_uses_file_cache_session(self, tmp_path, monkeypatch):
+        from cptools.cache import FileCacheSession
+        from cptools.http import build_session
+
+        monkeypatch.setenv("CASPARSER_ISIN_TOOLS_CACHE", str(tmp_path))
+        monkeypatch.delenv("CASPARSER_ISIN_TOOLS_NO_CACHE", raising=False)
+        assert isinstance(build_session(), FileCacheSession)
+
+    def test_disabled_mode_is_plain_session(self, tmp_path, monkeypatch):
+        import requests
+        from cptools.cache import FileCacheSession
+        from cptools.http import build_session
+
+        monkeypatch.setenv("CASPARSER_ISIN_TOOLS_CACHE", str(tmp_path))
+        monkeypatch.setenv("CASPARSER_ISIN_TOOLS_NO_CACHE", "1")
+        s = build_session()
+        assert isinstance(s, requests.Session)
+        assert not isinstance(s, FileCacheSession)
+
+
+class TestFileCacheSession:
+    """The shared on-disk HTTP cache (replaces requests-cache)."""
+
+    def _patch_network(self, monkeypatch, body=b"hello"):
+        """Stub the underlying transport; return a call counter."""
+        import requests
+
+        calls = {"n": 0}
+
+        def _fake(self, method, url, **kwargs):  # noqa: ARG001
+            calls["n"] += 1
+            r = requests.Response()
+            r.status_code = 200
+            r._content = body
+            r.url = url
+            r.encoding = "utf-8"
+            return r
+
+        monkeypatch.setattr(requests.Session, "request", _fake)
+        return calls
+
+    def test_get_is_cached_and_reused(self, tmp_path, monkeypatch):
+        from cptools.cache import FileCacheSession
+
+        calls = self._patch_network(monkeypatch)
+        s = FileCacheSession(tmp_path)
+        assert s.get("http://x/a").text == "hello"
+        assert s.get("http://x/a").text == "hello"
+        assert calls["n"] == 1  # second call served from disk
+
+    def test_distinct_urls_cache_separately(self, tmp_path, monkeypatch):
+        from cptools.cache import FileCacheSession
+
+        calls = self._patch_network(monkeypatch)
+        s = FileCacheSession(tmp_path)
+        s.get("http://x/a")
+        s.get("http://x/b")
+        assert calls["n"] == 2
+
+    def test_post_body_is_part_of_key(self, tmp_path, monkeypatch):
+        from cptools.cache import FileCacheSession
+
+        calls = self._patch_network(monkeypatch)
+        s = FileCacheSession(tmp_path)
+        s.post("http://x", data={"f": "1"})
+        s.post("http://x", data={"f": "1"})  # hit
+        s.post("http://x", data={"f": "2"})  # miss: different body
+        assert calls["n"] == 2
+
+    def test_expired_entry_refetches(self, tmp_path, monkeypatch):
+        import os
+        import time
+
+        from cptools.cache import CACHE_TTL_SECONDS, FileCacheSession
+
+        calls = self._patch_network(monkeypatch)
+        s = FileCacheSession(tmp_path)
+        s.get("http://x/a")
+        cached = next(tmp_path.glob("http-*.cache"))
+        old = time.time() - (CACHE_TTL_SECONDS + 60)
+        os.utime(cached, (old, old))
+        s.get("http://x/a")
+        assert calls["n"] == 2
+
+    def test_stream_bypasses_cache(self, tmp_path, monkeypatch):
+        from cptools.cache import FileCacheSession
+
+        calls = self._patch_network(monkeypatch)
+        s = FileCacheSession(tmp_path)
+        s.get("http://x/a", stream=True)
+        s.get("http://x/a", stream=True)
+        assert calls["n"] == 2
+        assert list(tmp_path.glob("http-*.cache")) == []
+
+    def test_non_200_not_cached(self, tmp_path, monkeypatch):
+        import requests
+        from cptools.cache import FileCacheSession
+
+        calls = {"n": 0}
+
+        def _fake(self, method, url, **kwargs):  # noqa: ARG001
+            calls["n"] += 1
+            r = requests.Response()
+            r.status_code = 500
+            r._content = b"err"
+            r.url = url
+            return r
+
+        monkeypatch.setattr(requests.Session, "request", _fake)
+        s = FileCacheSession(tmp_path)
+        s.get("http://x/a")
+        s.get("http://x/a")
+        assert calls["n"] == 2
+
+
 class TestParseNSEEquityCsv:
     """The NSE EQUITY_L.csv parser -- ISIN -> (symbol, exchange)."""
 

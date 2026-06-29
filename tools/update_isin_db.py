@@ -6,11 +6,17 @@ Run via ``python tools/update_isin_db.py``. For unattended cron use::
     B2_APP_ID=... B2_APP_KEY=... B2_BUCKET=... \\
     python tools/update_isin_db.py [--no-upload]
 
+Use ``--dry-run`` to build a candidate DB and print a concise diff against the
+live DB without promoting, writing meta, or uploading anything.
+
 Exit code conventions::
 
     0  -> no change, nothing published
     1  -> new database built and uploaded
     2  -> error
+
+    (under --dry-run, 1 means "changes detected", 0 means "no changes" --
+    nothing is published either way)
 """
 
 from __future__ import annotations
@@ -476,8 +482,164 @@ def build_pipeline() -> sqlite3.Connection:
     return _build_in_memory(rows, nav_rows, isin_rows)
 
 
-def run(*, no_upload: bool = False) -> int:
-    """Build, diff against the live DB, swap + upload if changed."""
+# Tables we diff for the dry-run report, keyed by their primary-key column.
+# nav20180131 is a frozen reference table (never changes after the one-time
+# import), so it's deliberately excluded from the human-facing diff.
+_DIFF_TABLES = {"scheme": "id", "isin": "isin"}
+
+# Columns whose value bumps on every reconfirm; a row that differs ONLY here
+# is "reconfirmed" noise, not a meaningful change.
+_NOISE_COLS = {"last_seen"}
+
+
+def _load_table(conn: sqlite3.Connection, table: str, pk: str) -> dict:
+    """Return ``{pk_value: {col: value}}`` for every row in ``table``."""
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    out = {}
+    for row in conn.execute(f"SELECT * FROM {table}"):
+        record = dict(zip(cols, row, strict=True))
+        out[record[pk]] = record
+    return out
+
+
+def _diff_table(baseline_path: Path, candidate_path: Path, table: str, pk: str) -> dict:
+    """Row-level diff of one table: added / changed / reconfirmed / removed.
+
+    ``changed`` lists rows whose non-noise columns differ (each entry carries
+    the changed field names). Rows differing only in :data:`_NOISE_COLS`
+    (e.g. ``last_seen``) count as ``reconfirmed`` and are not itemised.
+    """
+    with closing(sqlite3.connect(candidate_path)) as cand:
+        new_rows = _load_table(cand, table, pk)
+    if baseline_path.exists():
+        with closing(sqlite3.connect(baseline_path)) as base:
+            old_rows = _load_table(base, table, pk) if _table_exists(base, table) else {}
+    else:
+        old_rows = {}
+
+    added, changed = [], []
+    reconfirmed = 0
+    for key, new in new_rows.items():
+        old = old_rows.get(key)
+        if old is None:
+            added.append(new)
+            continue
+        diff_cols = [c for c in new if c not in _NOISE_COLS and new.get(c) != old.get(c)]
+        if diff_cols:
+            changed.append((old, new, diff_cols))
+        elif any(new.get(c) != old.get(c) for c in _NOISE_COLS):
+            reconfirmed += 1
+    removed = [old for key, old in old_rows.items() if key not in new_rows]
+
+    return {
+        "table": table,
+        "pk": pk,
+        "added": added,
+        "changed": changed,
+        "removed": removed,
+        "reconfirmed": reconfirmed,
+    }
+
+
+def _print_dry_run_report(baseline_path: Path, candidate_path: Path, limit: int) -> None:
+    """Render a concise diff of candidate vs live DB. Uses rich if available."""
+    diffs = [
+        _diff_table(baseline_path, candidate_path, table, pk) for table, pk in _DIFF_TABLES.items()
+    ]
+
+    try:
+        from rich.console import Console
+        from rich.table import Table
+    except ImportError:  # rich is in the `tools` group; degrade gracefully
+        _print_dry_run_report_plain(diffs, limit)
+        return
+
+    console = Console()
+    console.rule("[bold]DRY RUN — candidate not promoted / not uploaded")
+
+    summary = Table(title="Change summary", title_justify="left")
+    summary.add_column("table", style="cyan")
+    summary.add_column("added", justify="right", style="green")
+    summary.add_column("changed", justify="right", style="yellow")
+    summary.add_column("removed", justify="right", style="red")
+    summary.add_column("reconfirmed", justify="right", style="dim")
+    for d in diffs:
+        summary.add_row(
+            d["table"],
+            str(len(d["added"])),
+            str(len(d["changed"])),
+            str(len(d["removed"])),
+            str(d["reconfirmed"]),
+        )
+    console.print(summary)
+
+    for d in diffs:
+        _print_table_samples(console, Table, d, limit)
+
+
+def _row_brief(row: dict, pk: str) -> str:
+    """A compact one-liner for a row: PK + name when present."""
+    name = row.get("name") or row.get("issuer") or ""
+    return f"{row[pk]}  {name}".strip()
+
+
+def _print_table_samples(console, Table, d: dict, limit: int) -> None:
+    table, pk = d["table"], d["pk"]
+    for kind, color in (("added", "green"), ("changed", "yellow"), ("removed", "red")):
+        items = d[kind]
+        if not items:
+            continue
+        shown = f", showing {limit}" if len(items) > limit else ""
+        t = Table(
+            title=f"{table}: {kind} ({len(items)}{shown})",
+            title_justify="left",
+            title_style=color,
+        )
+        if kind == "changed":
+            t.add_column(pk, style="cyan")
+            t.add_column("fields")
+            t.add_column("old → new")
+            for old, new, cols in items[:limit]:
+                changes = ", ".join(f"{c}: {old.get(c)!r}→{new.get(c)!r}" for c in cols)
+                t.add_row(str(new[pk]), ", ".join(cols), changes)
+        else:
+            t.add_column(pk, style="cyan")
+            t.add_column("name / issuer")
+            for row in items[:limit]:
+                t.add_row(str(row[pk]), row.get("name") or row.get("issuer") or "")
+        console.print(t)
+
+
+def _print_dry_run_report_plain(diffs: list, limit: int) -> None:
+    """Fallback report when rich isn't installed."""
+    print("=== DRY RUN — candidate not promoted / not uploaded ===")
+    for d in diffs:
+        print(
+            f"{d['table']}: +{len(d['added'])} added, "
+            f"~{len(d['changed'])} changed, -{len(d['removed'])} removed, "
+            f"{d['reconfirmed']} reconfirmed"
+        )
+        for kind in ("added", "changed", "removed"):
+            items = d[kind]
+            if not items:
+                continue
+            print(f"  {kind} (showing up to {limit}):")
+            for entry in items[:limit]:
+                if kind == "changed":
+                    old, new, cols = entry
+                    detail = ", ".join(f"{c}={old.get(c)!r}->{new.get(c)!r}" for c in cols)
+                    print(f"    {new[d['pk']]}  {detail}")
+                else:
+                    print(f"    {_row_brief(entry, d['pk'])}")
+
+
+def run(*, no_upload: bool = False, dry_run: bool = False, limit: int = 5) -> int:
+    """Build, diff against the live DB, swap + upload if changed.
+
+    When ``dry_run`` is set, the candidate is built and diffed but never
+    promoted into the repo, never written to the meta sidecar, and never
+    uploaded to B2 -- the diff is printed instead.
+    """
     mem_conn = build_pipeline()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -491,6 +653,15 @@ def run(*, no_upload: bool = False) -> int:
 
         new_hash = _hash_db_content(tmp_path)
         old_hash = _hash_db_content(ISIN_DB_PATH) if ISIN_DB_PATH.exists() else None
+
+        if dry_run:
+            if old_hash == new_hash:
+                logger.info("Built DB matches current ISIN database; no changes")
+            else:
+                _print_dry_run_report(ISIN_DB_PATH, tmp_path, limit)
+            logger.info("--dry-run set; candidate discarded (no promote, no upload)")
+            return _NO_CHANGE if old_hash == new_hash else _PUBLISHED
+
         if old_hash == new_hash:
             logger.info("Built DB matches current ISIN database; nothing to publish")
             return _NO_CHANGE
@@ -526,14 +697,29 @@ def main() -> int:
     parser.add_argument(
         "--no-upload",
         action="store_true",
-        help="Skip the B2 upload (useful for local dry-runs).",
+        help="Build and promote the DB into the repo, but skip the B2 upload.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Build a candidate DB and print a diff against the live DB, then "
+            "discard it. Never promotes into the repo, writes meta, or uploads."
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Max rows to show per change category in --dry-run (default: 5).",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable DEBUG logging.")
     args = parser.parse_args()
     configure_logging(logging.DEBUG if args.verbose else logging.INFO)
 
     try:
-        return run(no_upload=args.no_upload)
+        return run(no_upload=args.no_upload, dry_run=args.dry_run, limit=args.limit)
     except Exception:  # noqa: BLE001
         logger.exception("update_isin_db failed")
         return _ERROR

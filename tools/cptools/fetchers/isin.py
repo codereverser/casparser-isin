@@ -5,9 +5,15 @@ This feeds the ``isin`` table consumed by NSDL CAS support in casparser.
 Upstream format
 ---------------
 The upstream project publishes a SQLite database as a versioned GitHub
-release asset. We discover the latest release via the GitHub API, stream
-the asset to a temporary file, and read the rows we care about with a
-plain ``SELECT``.
+release asset. We discover the latest release via the GitHub API, then
+read the rows we care about with a plain ``SELECT``.
+
+The ~130 MB asset gets a dedicated on-disk cache (the shared
+:func:`cptools.cache.is_fresh` / :data:`~cptools.cache.CACHE_TTL_SECONDS`
+logic): a single fixed file under the tools cache dir with a 12-hour TTL --
+a re-run within that window reuses the file instead of re-downloading it.
+``CASPARSER_ISIN_TOOLS_NO_CACHE`` bypasses this cache and streams to a
+throwaway temp file (the cron mode).
 
 The upstream ``isin`` table schema (subset we consume)::
 
@@ -38,8 +44,9 @@ from pathlib import Path
 
 import requests
 
+from ..cache import is_fresh
 from ..constants import ISIN_ASSET_NAME, ISIN_GITHUB_LATEST_RELEASE_API
-from ..settings import logger
+from ..settings import cache_disabled, get_cache_dir, logger
 
 # The live upstream DB ships > 380k rows. Anything dramatically below
 # this is a sign we got a truncated download or a malformed file.
@@ -165,24 +172,11 @@ def _find_latest_release_asset(session: requests.Session) -> tuple[str, str]:
 def _stream_download(session: requests.Session, url: str, dest: Path) -> int:
     """Stream a binary asset to ``dest``. Returns the byte count.
 
-    If ``session`` is a requests-cache ``CachedSession``, we bypass the
-    HTTP cache for this one request -- a 130+ MB binary doesn't belong
-    in the cache SQLite backend, and we always want a fresh asset for a
-    release build.
+    ``stream=True`` makes :class:`cptools.cache.FileCacheSession` pass the
+    request straight through -- a 130+ MB binary is cached as its own file by
+    :func:`_ensure_cached_asset`, not in the response body cache.
     """
-
-    def _do_get():
-        return session.get(url, stream=True, timeout=300)
-
-    # `cache_disabled()` is only on requests-cache CachedSession; a plain
-    # requests.Session lacks it. Probe and branch.
-    cache_disabled = getattr(session, "cache_disabled", None)
-    if callable(cache_disabled):
-        with cache_disabled():
-            response = _do_get()
-    else:
-        response = _do_get()
-
+    response = session.get(url, stream=True, timeout=300)
     if response.status_code != 200:
         raise ValueError(f"captn3m0 release asset returned {response.status_code} for {url}")
     total = 0
@@ -195,34 +189,74 @@ def _stream_download(session: requests.Session, url: str, dest: Path) -> int:
     return total
 
 
+def _download_and_log(session: requests.Session, url: str, dest: Path) -> int:
+    """Stream the asset to ``dest`` and log its size. Returns the byte count."""
+    bytes_written = _stream_download(session, url, dest)
+    logger.info(
+        "captn3m0 release asset downloaded: %d bytes (%.1f MB)",
+        bytes_written,
+        bytes_written / (1024 * 1024),
+    )
+    return bytes_written
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _ensure_cached_asset(session: requests.Session, url: str) -> Path:
+    """Return the cached asset path, downloading only on a miss or expiry.
+
+    A single fixed file holds the latest copy; a fresh download overwrites
+    it. The cache hits when the file exists and is younger than the 12-hour
+    TTL. The download lands in a ``.tmp`` sibling and is atomically renamed,
+    so a crash mid-download can't leave a truncated file behind.
+    """
+    dest = get_cache_dir() / "captn3m0-isin.db"
+    if is_fresh(dest):
+        logger.info("captn3m0 asset cache hit: %s (%d bytes)", dest, dest.stat().st_size)
+        return dest
+
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        _download_and_log(session, url, tmp)
+        os.replace(tmp, dest)
+    finally:
+        _unlink_quietly(tmp)
+    return dest
+
+
 def get_isin_data(session: requests.Session) -> list[list[str]]:
     """Return rows of ``[isin, name, issuer, type, status]``.
 
     Out-of-scope instrument types (commercial paper, T-bills, etc.) are
-    dropped here -- see :data:`KEEP_TYPES`. The upstream SQLite asset is
-    downloaded to a temp file, queried, and then deleted.
+    dropped here -- see :data:`KEEP_TYPES`.
+
+    The upstream SQLite asset (~130 MB) gets its own on-disk cache: a single
+    fixed file under the tools cache dir with the shared 12-hour TTL.
+    ``CASPARSER_ISIN_TOOLS_NO_CACHE`` bypasses the cache: the asset streams to
+    a temp file, is queried, then deleted (the correct mode for cron).
     """
     tag, asset_url = _find_latest_release_asset(session)
     logger.info("captn3m0 latest release: %s (%s)", tag, asset_url)
 
-    # Use a temp file in the system temp dir so the 130 MB download doesn't
-    # land in the repo or in the HTTP cache.
-    fd, tmp_name = tempfile.mkstemp(prefix="captn3m0-", suffix=".db")
-    os.close(fd)
-    tmp_path = Path(tmp_name)
-    try:
-        bytes_written = _stream_download(session, asset_url, tmp_path)
-        logger.info(
-            "captn3m0 release asset downloaded: %d bytes (%.1f MB)",
-            bytes_written,
-            bytes_written / (1024 * 1024),
-        )
-        kept, dropped = parse_isin_db(tmp_path)
-    finally:
+    if cache_disabled():
+        # No persistent cache: temp file in the system temp dir so the
+        # download lands neither in the repo nor in the cache dir.
+        fd, tmp_name = tempfile.mkstemp(prefix="captn3m0-", suffix=".db")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
         try:
-            tmp_path.unlink()
-        except FileNotFoundError:
-            pass
+            _download_and_log(session, asset_url, tmp_path)
+            kept, dropped = parse_isin_db(tmp_path)
+        finally:
+            _unlink_quietly(tmp_path)
+    else:
+        asset_path = _ensure_cached_asset(session, asset_url)
+        kept, dropped = parse_isin_db(asset_path)
 
     total = len(kept) + sum(dropped.values())
     if total < _MIN_EXPECTED_ROWS:

@@ -1,8 +1,8 @@
 """Shared fixtures and import-skip wiring for tools tests.
 
 The build pipeline lives under ``tools/cptools`` and depends on the
-``tools`` dependency group (lxml, b2sdk, requests-cache). When that group
-isn't installed (e.g. running ``uv sync`` without ``--group tools``), this
+``tools`` dependency group (lxml, b2sdk, rich). When that group isn't
+installed (e.g. running ``uv sync`` without ``--group tools``), this
 whole subtree is skipped.
 """
 

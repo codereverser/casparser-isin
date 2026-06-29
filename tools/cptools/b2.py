@@ -14,12 +14,67 @@ import gzip
 import hashlib
 import os
 import shutil
+import sys
 import tempfile
+import time
 from pathlib import Path
 
-from b2sdk.v2 import B2Api, InMemoryAccountInfo
+from b2sdk.v2 import (
+    AbstractProgressListener,
+    B2Api,
+    InMemoryAccountInfo,
+    make_progress_listener,
+)
 
 from .settings import ISIN_DB_PATH, ISIN_META_PATH, logger
+
+
+class _LoggingProgressListener(AbstractProgressListener):
+    """Report upload progress through the module logger.
+
+    Emits a timestamped percentage line at most every
+    :attr:`_INTERVAL_SECONDS`, so a long upload shows steady movement in a
+    cron log (and a stall is obvious) without flooding it. Unlike a tqdm bar's
+    carriage-return repaints, every line stands on its own.
+    """
+
+    _INTERVAL_SECONDS = 5.0
+
+    def __init__(self, description: str):
+        super().__init__(description)
+        self._total = 0
+        self._last_log = 0.0
+
+    def set_total_bytes(self, total_byte_count: int) -> None:
+        self._total = total_byte_count
+
+    def bytes_completed(self, byte_count: int) -> None:
+        now = time.monotonic()
+        # Always log the final 100% tick; throttle the intermediate ones.
+        done = self._total and byte_count >= self._total
+        if not self._total or (not done and now - self._last_log < self._INTERVAL_SECONDS):
+            return
+        self._last_log = now
+        logger.info(
+            "Uploading %s: %d%% (%d/%d bytes)",
+            self.description,
+            int(100.0 * byte_count / self._total),
+            byte_count,
+            self._total,
+        )
+
+
+def _progress_listener(description: str):
+    """Pick the best upload progress reporter for the current output.
+
+    On an interactive terminal, :func:`make_progress_listener` yields a tqdm
+    bar (or a plain percentage if tqdm isn't installed). Under cron / piped
+    output we use :class:`_LoggingProgressListener`, which routes progress
+    through the logger as timestamped percentage lines.
+    """
+    if sys.stderr.isatty():
+        return make_progress_listener(description, quiet=False)
+    return _LoggingProgressListener(description)
 
 
 def _gzip_to_temp(src: Path) -> Path:
@@ -79,7 +134,10 @@ def upload_isin_db_to_b2(
         local_db_sha,
     )
 
-    db_version = bucket.upload_local_file(str(db_path), db_path.name)
+    with _progress_listener(db_path.name) as progress:
+        db_version = bucket.upload_local_file(
+            str(db_path), db_path.name, progress_listener=progress
+        )
     logger.info("Uploaded %s [file_id=%s]", db_version.file_name, db_version.id_)
 
     # Verify the uploaded db before promoting the meta. If the server-side
@@ -99,7 +157,8 @@ def upload_isin_db_to_b2(
     gz_path = _gzip_to_temp(db_path)
     try:
         logger.info("Uploading %s (%d bytes) to B2", gz_name, gz_path.stat().st_size)
-        gz_version = bucket.upload_local_file(str(gz_path), gz_name)
+        with _progress_listener(gz_name) as progress:
+            gz_version = bucket.upload_local_file(str(gz_path), gz_name, progress_listener=progress)
         logger.info("Uploaded %s [file_id=%s]", gz_version.file_name, gz_version.id_)
     finally:
         gz_path.unlink(missing_ok=True)
